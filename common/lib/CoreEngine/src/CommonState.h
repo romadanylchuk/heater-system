@@ -3,12 +3,15 @@
 #include <stdint.h>
 #include <BoardConfig.h>
 #include "EventTypes.h"
+#include "HardwareStatus.h"
 
 // The common part of AppState: fields every controller shares (network, time,
-// alarms, diagnostics, 1-Wire scan, relays, system/boot status) plus a read-only
-// view of the event log. Written only by the main loop's single writer
-// (CoreRuntime); every other task/view only reads it. Value-initialise on
-// construction: `CommonState state{};` (D21).
+// alarms, diagnostics, 1-Wire scan, relays, sensors, K1, anti-seize,
+// system/boot status) plus a read-only view of the event log. Written only by
+// the main loop's single writer (CoreRuntime); every other task/view only
+// reads it. Value-initialise on construction: `CommonState state{};` (D21).
+// Stage 03 extends RelayArray/OneWireScan and appends sensors/k1/antiSeize
+// additively; nothing that read relays/oneWire before stage 03 is broken.
 constexpr size_t ONE_WIRE_MAX_DEVICES = 12;
 
 struct NetworkStatus {
@@ -47,10 +50,18 @@ struct OneWireScan {
     uint8_t count;
     uint8_t address[ONE_WIRE_MAX_DEVICES][8];
     bool done;
+    uint8_t logical[ONE_WIRE_MAX_DEVICES];   // NO_LOGICAL_SENSOR = new/unassigned
+    float tempC[ONE_WIRE_MAX_DEVICES];
+    bool tempValid[ONE_WIRE_MAX_DEVICES];
+    bool overflow;
+    uint32_t scanCount;
 };
 
 struct RelayArray {
-    bool on[RELAY_CHANNEL_COUNT];
+    bool on[RELAY_CHANNEL_COUNT];                        // actual state (unchanged meaning)
+    RelayChannelStatus channel[RELAY_CHANNEL_COUNT];
+    bool ioError;
+    uint32_t ioErrorCount;
 };
 
 enum class ResetGatePhase : uint8_t { Inactive, Countdown, Aborted, Confirmed };
@@ -76,6 +87,9 @@ struct CommonState {
     DiagnosticsStatus diag;
     OneWireScan oneWire;
     RelayArray relays;
+    SensorArray sensors;
+    K1Status k1;
+    AntiSeizeStatus antiSeize;
     SystemStatus system;
     const EventLog* eventLog;  // read-only view of the service's RAM ring, no copy (D21)
 };

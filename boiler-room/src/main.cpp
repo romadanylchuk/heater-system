@@ -3,6 +3,8 @@
 #include <BoardConfig.h>
 #include <RelayBoot.h>
 #include <CoreServices.h>
+#include <HardwareServices.h>
+#include "BoilerRoomHardware.h"
 #include "BoilerRoomSchema.h"
 
 #ifndef FW_VERSION
@@ -13,6 +15,7 @@ static const char* const PROJECT_NAME = "boiler-room";
 
 static CommonState state{};
 static CoreServices core(state, BOILER_ROOM_SCHEMA, FW_VERSION);
+static HardwareServices hw(state, core, BOILER_ROOM_HW);
 
 void setup() {
     // SAFETY: must remain the first statements of setup()
@@ -27,11 +30,20 @@ void setup() {
     }
 
     core.begin(Wire);
+    hw.begin(Wire);
 }
 
 void loop() {
+    static bool first = true;
+    static uint32_t lastSlow = 0;
     const uint32_t start = millis();
-    core.tick();
+    if (first || start - lastSlow >= CORE_LOOP_PERIOD_MS) {
+        first = false;
+        lastSlow = start;
+        core.tick();
+        hw.tick();
+    }
+    hw.fastTick();
     const uint32_t spent = millis() - start;
-    delay(spent < CORE_LOOP_PERIOD_MS ? CORE_LOOP_PERIOD_MS - spent : 1);
+    delay(spent < HW_FAST_TICK_MS ? HW_FAST_TICK_MS - spent : 1);
 }

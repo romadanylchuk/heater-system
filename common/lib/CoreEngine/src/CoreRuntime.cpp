@@ -55,8 +55,13 @@ CommandStatus CoreRuntime::apply(Command& cmd, uint64_t monoMs) {
             status = CommandStatus::Ok;
             break;
         case CommandType::None:
-        default:
             status = CommandStatus::InvalidCommand;
+            break;
+        case CommandType::AssignSensor:
+        case CommandType::ClearSensor:
+        case CommandType::RescanOneWire:
+        default:
+            status = _extHandler != nullptr ? _extHandler(cmd, monoMs, _extCtx) : CommandStatus::InvalidCommand;
             break;
     }
 

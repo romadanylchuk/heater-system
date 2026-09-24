@@ -321,6 +321,95 @@ static void rt_test_gate_seconds_left_counts_down() {
     TEST_ASSERT_EQUAL_UINT8(0, gate.secondsLeft(10000));
 }
 
+static void rt_test_assign_sensor_without_handler_is_invalid_command() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(TEST_SCHEMA_A_V1, 0)));
+    InMemoryCommandQueue queue;
+    CommonState state{};
+    CoreRuntime runtime(state, config, log, queue);
+
+    uint8_t addr[8] = {0x28, 1, 2, 3, 4, 5, 6, 7};
+    TEST_ASSERT_TRUE(queue.post(makeAssignSensor(0, addr, EventReason::Web, 3)));
+    runtime.tick(0);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CommandStatus::InvalidCommand), state.system.lastCommandStatus);
+    TEST_ASSERT_EQUAL_UINT32(3, state.system.lastCommandId);
+}
+
+namespace {
+struct ExtHandlerCallRecord {
+    int calls = 0;
+    CommandType lastType = CommandType::None;
+    uint16_t lastSettingIndex = 0;
+};
+
+CommandStatus extHandlerRecordAndOk(Command& cmd, uint64_t /*monoMs*/, void* ctx) {
+    auto* rec = static_cast<ExtHandlerCallRecord*>(ctx);
+    ++rec->calls;
+    rec->lastType = cmd.type;
+    rec->lastSettingIndex = cmd.settingIndex;
+    return CommandStatus::Ok;
+}
+}  // namespace
+
+static void rt_test_extension_handler_called_once_for_extension_types_not_for_set_number() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(TEST_SCHEMA_A_V1, 0)));
+    InMemoryCommandQueue queue;
+    CommonState state{};
+    CoreRuntime runtime(state, config, log, queue);
+
+    ExtHandlerCallRecord rec;
+    runtime.setExtensionHandler(&extHandlerRecordAndOk, &rec);
+
+    uint8_t addr[8] = {0x28, 1, 2, 3, 4, 5, 6, 7};
+    TEST_ASSERT_TRUE(queue.post(makeAssignSensor(2, addr, EventReason::Web, 4)));
+    runtime.tick(0);
+
+    TEST_ASSERT_EQUAL_INT(1, rec.calls);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::AssignSensor), static_cast<int>(rec.lastType));
+    TEST_ASSERT_EQUAL_UINT16(2, rec.lastSettingIndex);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CommandStatus::Ok), state.system.lastCommandStatus);
+
+    // A SetNumber command still goes to ConfigEngine directly; the extension
+    // handler is not invoked for command types CoreRuntime owns.
+    TEST_ASSERT_TRUE(queue.post(makeSetNumber(static_cast<uint16_t>(TEST_INDEX_INT), 77, EventReason::Web, 5)));
+    runtime.tick(0);
+
+    TEST_ASSERT_EQUAL_INT(1, rec.calls);  // unchanged
+    TEST_ASSERT_EQUAL_FLOAT(77.0f, config.getNumber(TEST_INDEX_INT));
+}
+
+static void rt_test_command_none_is_invalid_even_with_handler() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(TEST_SCHEMA_A_V1, 0)));
+    InMemoryCommandQueue queue;
+    CommonState state{};
+    CoreRuntime runtime(state, config, log, queue);
+
+    ExtHandlerCallRecord rec;
+    runtime.setExtensionHandler(&extHandlerRecordAndOk, &rec);
+
+    // A null address makes makeAssignSensor return type = None (D22 convention).
+    Command cmd = makeAssignSensor(0, nullptr, EventReason::Web, 6);
+    CommandStatus status = runtime.apply(cmd, 0);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidCommand), static_cast<int>(status));
+    TEST_ASSERT_EQUAL_INT(0, rec.calls);
+}
+
 // Runs every test in this suite. Call between UNITY_BEGIN()/UNITY_END() in the wrapper.
 inline void runRuntimeSuite() {
     RUN_TEST(rt_test_set_number_applied_on_tick);
@@ -337,4 +426,7 @@ inline void runRuntimeSuite() {
     RUN_TEST(rt_test_gate_aborts_on_sustained_release);
     RUN_TEST(rt_test_gate_short_bounce_does_not_abort);
     RUN_TEST(rt_test_gate_seconds_left_counts_down);
+    RUN_TEST(rt_test_assign_sensor_without_handler_is_invalid_command);
+    RUN_TEST(rt_test_extension_handler_called_once_for_extension_types_not_for_set_number);
+    RUN_TEST(rt_test_command_none_is_invalid_even_with_handler);
 }

@@ -43,6 +43,12 @@ public:
         _resetHookCtx = ctx;
     }
     void setFactoryResetHook(FactoryResetHook hook, void* ctx) { _runtime.setFactoryResetHook(hook, ctx); }
+    // Passthrough to CoreRuntime::setExtensionHandler (D22): registers the
+    // handler for CommandTypes CoreRuntime does not own itself (e.g.
+    // AssignSensor/ClearSensor/RescanOneWire, dispatched to HwRuntime).
+    void setCommandExtension(CommandExtensionHandler handler, void* ctx) {
+        _runtime.setExtensionHandler(handler, ctx);
+    }
 
 private:
     static void onSettingChanged(size_t index, void* ctx);

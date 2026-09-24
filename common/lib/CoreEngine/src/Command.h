@@ -8,7 +8,19 @@
 // Fixed-size command POD posted from web/MQTT handlers (or boot logic) into the
 // single-writer CoreRuntime via a CommandQueue (D13). The builders below are the
 // only supported way to construct a Command.
-enum class CommandType : uint8_t { None = 0, SetNumber, SetText, ImportBackup, FactoryReset };
+// AssignSensor/ClearSensor/RescanOneWire (stage 03) are dispatched by CoreRuntime
+// to an optional extension handler (D22); the existing four types keep their
+// numeric values unchanged.
+enum class CommandType : uint8_t {
+    None = 0,
+    SetNumber,
+    SetText,
+    ImportBackup,
+    FactoryReset,
+    AssignSensor,
+    ClearSensor,
+    RescanOneWire,
+};
 enum class CommandStatus : uint8_t {
     Ok = 0,
     Clamped,
@@ -28,6 +40,7 @@ struct Command {
     uint32_t id = 0;
     float number = 0.0f;
     char text[COMMAND_TEXT_MAX + 1] = {};
+    uint8_t address[8] = {};  // AssignSensor only (8-byte DS18B20 ROM)
     // ImportBackup only: malloc'd JSON payload. Ownership moves to the queue on a
     // successful post(); CoreRuntime::apply() always free()s it (D13).
     char* payload = nullptr;
@@ -76,6 +89,40 @@ inline Command makeImportBackup(char* payload, size_t len, EventReason origin, u
 inline Command makeFactoryReset(EventReason origin, uint32_t id) {
     Command cmd;
     cmd.type = CommandType::FactoryReset;
+    cmd.origin = origin;
+    cmd.id = id;
+    return cmd;
+}
+
+// settingIndex doubles as the logical sensor index for the three sensor commands
+// below (D22). A null address gives type = None, the same convention as
+// makeSetText's overflow case, so callers/consumers reject it as InvalidCommand.
+inline Command makeAssignSensor(uint8_t logicalIndex, const uint8_t address[8], EventReason origin, uint32_t id) {
+    Command cmd;
+    cmd.origin = origin;
+    cmd.settingIndex = logicalIndex;
+    cmd.id = id;
+    if (address == nullptr) {
+        cmd.type = CommandType::None;
+        return cmd;
+    }
+    cmd.type = CommandType::AssignSensor;
+    memcpy(cmd.address, address, 8);
+    return cmd;
+}
+
+inline Command makeClearSensor(uint8_t logicalIndex, EventReason origin, uint32_t id) {
+    Command cmd;
+    cmd.type = CommandType::ClearSensor;
+    cmd.origin = origin;
+    cmd.settingIndex = logicalIndex;
+    cmd.id = id;
+    return cmd;
+}
+
+inline Command makeRescanOneWire(EventReason origin, uint32_t id) {
+    Command cmd;
+    cmd.type = CommandType::RescanOneWire;
     cmd.origin = origin;
     cmd.id = id;
     return cmd;

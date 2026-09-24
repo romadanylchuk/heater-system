@@ -12,6 +12,11 @@
 // ~1 s main loop.
 using FactoryResetHook = void (*)(EventReason origin, void* ctx);
 
+// Handles command types CoreRuntime does not own (AssignSensor/ClearSensor/
+// RescanOneWire, and any future extension types). Must not free cmd.payload
+// (apply() still does that for every type). Stage 03 (D22).
+using CommandExtensionHandler = CommandStatus (*)(Command& cmd, uint64_t monoMs, void* ctx);
+
 class CoreRuntime {
 public:
     static constexpr size_t MAX_COMMANDS_PER_TICK = 16;
@@ -39,6 +44,12 @@ public:
         _resetHookCtx = ctx;
     }
 
+    // Registers the handler for command types CoreRuntime does not own (D22).
+    void setExtensionHandler(CommandExtensionHandler handler, void* ctx) {
+        _extHandler = handler;
+        _extCtx = ctx;
+    }
+
 private:
     CommonState& _state;
     ConfigEngine& _config;
@@ -47,4 +58,7 @@ private:
 
     FactoryResetHook _resetHook = nullptr;
     void* _resetHookCtx = nullptr;
+
+    CommandExtensionHandler _extHandler = nullptr;
+    void* _extCtx = nullptr;
 };

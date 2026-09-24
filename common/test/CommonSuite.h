@@ -4,6 +4,7 @@
 #include "BackupSuite.h"
 #include "ConfigEngineSuite.h"
 #include "EventLogSuite.h"
+#include "HwSuite.h"
 #include "RuntimeSuite.h"
 #include "TimeSuite.h"
 
@@ -34,4 +35,5 @@ inline void runCommonSuite() {
     runBackupSuite();
     runRuntimeSuite();
     runTimeSuite();
+    runHwSuite();
 }

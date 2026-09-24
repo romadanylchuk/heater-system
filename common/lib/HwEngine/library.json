@@ -1,0 +1,7 @@
+{
+  "name": "HwEngine",
+  "version": "0.1.0",
+  "description": "Pure hardware-service logic: relay lock/bypass, K1 drive, DS18B20 debounce/mapping, anti-seize; native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "HwEsp32",
+  "version": "0.1.0",
+  "description": "ESP32-only adapters for HwEngine: Pcf8574RelayPort (relay expander over TwoWire), DallasOneWireBus (DS18B20 over OneWire/DallasTemperature), and the HardwareServices wiring facade both main.cpp files construct next to CoreServices.",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
