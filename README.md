@@ -13,13 +13,81 @@ heater-system/
 │   ├── platformio-common.ini   shared envs (release/debug/native), included by both projects
 │   ├── lib/
 │   │   ├── BoardConfig/        header-only, pure pin/address map + relay-mask helper (native + ESP32)
-│   │   └── RelayBoot/          Arduino-only: writes the relay all-OFF byte at boot
+│   │   ├── RelayBoot/          Arduino-only: writes the relay all-OFF byte at boot
+│   │   ├── CoreEngine/         pure, native-testable firmware core (see "Core engine" below)
+│   │   └── CoreEsp32/          ESP32-only adapters for CoreEngine (NVS, RTC, SNTP, watchdog, DI1)
 │   ├── web/                    shared web UI sources (style.css, lang/); assembled into <project>/data/
 │   ├── scripts/                PlatformIO pre-scripts (fw_version.py, web_assemble.py)
 │   └── test/                   CommonSuite.h — native tests shared by both projects
 ├── boiler-room/                PlatformIO project (src/, web/, test/)
 └── home-heating/                PlatformIO project (src/, web/, test/)
 ```
+
+## Core engine (stage 02)
+
+Both controllers share one firmware core, split across two libraries by hardware dependency:
+
+- **`common/lib/CoreEngine`** — pure C++ (`platforms: *`, `frameworks: *`), no `Arduino.h`/`Wire.h`/
+  `nvs.h`/FreeRTOS/`esp_*` includes anywhere, so it builds and unit-tests on the host (`pio test -e
+  native`). It holds the descriptor-driven settings engine (load/clamp/debounce/save, versioning +
+  migration, factory reset, JSON backup export/import), the persistent event log (50-entry ring,
+  CRC-guarded slot persistence, 60 s per-type+source rate limit), the common `AppState` part
+  (`CommonState`) and command model, the single-writer `CoreRuntime`, the DI1 factory-reset gate
+  state machine, and pure time logic (DS1307 BCD codec, civil/epoch conversion, POSIX-TZ
+  plausibility, `TimeKeeper`). Storage and time sit behind the `KvStore`/`Clock` interfaces so
+  native tests use in-memory fakes (`common/test/fakes/`).
+- **`common/lib/CoreEsp32`** — ESP32-only adapters (`frameworks: arduino`, `platforms: espressif32`):
+  `NvsKvStore` (IDF `nvs.h`), `FreeRtosCommandQueue`, `Ds1307Rtc` (I2C), `TimeService` (RTC + SNTP +
+  TZ), `Watchdog` (task WDT + reset-cause capture), `FactoryResetInput` (DI1 boot countdown), and the
+  `CoreServices` facade both `main.cpp` files construct and drive.
+
+Both projects build with **`-std=gnu++17`** in every env (release/debug/native), so the ESP32
+toolchain (gcc 8.4, default `gnu++11`) and the host gcc compile the same language level.
+
+### NVS namespaces
+
+- **`cfg`** — every resettable value: all settings (Wi-Fi, MQTT, web login, time zone, NTP server,
+  controller settings) plus the config-version key `cfgVer`. A factory reset erases this namespace
+  only (`nvs_erase_all()` on the `cfg` handle — never `nvs_flash_erase()`), so it is safe to add any
+  future resettable data here.
+- **`evlog`** — the 50 event-log slots (`ev00`..`ev49`), one NVS blob per slot. It survives a
+  factory reset.
+
+### Backup JSON shape
+
+```json
+{"type":"boiler-room","format":1,"configVersion":1,"fwVersion":"...","settings":{"<key>":<number|bool|string>,...}}
+```
+
+`type` is the controller type (`boiler-room`/`home-heating`); import refuses a file for the other
+type, or one with an unknown `format`, with zero changes. Wi-Fi settings are excluded from export
+(`SETTING_FLAG_NO_BACKUP`); MQTT and web-login secrets are included in plain text.
+
+### Event catalogue
+
+Common event types/sources live in `common/lib/CoreEngine/src/EventTypes.h`. Project-specific
+controllers define their own event types starting at `EVENT_TYPE_PROJECT_BASE` (1000) so they never
+collide with the shared catalogue.
+
+### DI1 factory-reset procedure
+
+Holding DI1 (PCF8574 @ `0x22`, bit `FACTORY_RESET_INPUT`) closed through power-on for 10 s wipes the
+`cfg` namespace (all settings, including Wi-Fi/MQTT/login — back to `admin`/`admin`) and requests
+setup-AP mode; the event log is kept. Releasing DI1 before the 10 s hold aborts the reset with no
+changes. This runs from `CoreServices::begin()`, strictly **after** the SAFETY relay-all-OFF
+statements in `setup()`, so relays stay OFF for the whole countdown.
+
+**Board-check item:** `INPUT_ACTIVE_LOW` in `common/lib/BoardConfig/src/BoardConfig.h` (default
+`true`, marked `TODO(board-check)`) assumes the KC868-A6 opto inputs pull the PCF8574 pin low when
+closed — add this to the bring-up checklist below and confirm DI1's polarity on real hardware before
+relying on the factory-reset gate.
+
+### Watchdog
+
+The IDF task watchdog is reconfigured to a **15 s** timeout (`Watchdog::TIMEOUT_S`) and subscribes
+the loop task; `CoreServices::tick()` feeds it every ~1 s pass (and `FactoryResetInput` feeds it
+every 20 ms poll during the DI1 countdown). A watchdog reboot is captured as `ResetCause` via
+`esp_reset_reason()` and logged as a `Reboot` event on the next boot.
 
 ## Prerequisites
 
@@ -138,3 +206,20 @@ The KC868-A6 relay board's active level cannot be measured by an agent. `RELAY_A
 5. Once confirmed, replace the `TODO(board-check)` comment with `// Verified on board <date>`.
 6. A `[boot] ... all-OFF write failed` line on the serial monitor means the PCF8574 relay
    expander did not ACK — check the I²C wiring/address (`0x24`) before trusting the relay state.
+
+### DI1 input polarity (factory-reset gate)
+
+`INPUT_ACTIVE_LOW` in `common/lib/BoardConfig/src/BoardConfig.h` defaults to `true` (DI1 reads
+"closed" when the PCF8574 @ `0x22` bit is `0`), marked `TODO(board-check)`. Confirm on real
+hardware:
+
+1. Flash `release`, open the serial monitor at 115200.
+2. With DI1 **not** wired/closed, power-cycle — the serial log must show no `[factory-reset] DI1
+   held` lines (the countdown never starts).
+3. Close DI1 (short the input to its active level) and power-cycle. The serial log should print
+   `[factory-reset] DI1 held, N s left` counting down from 10; releasing it before 0 must stop the
+   countdown with no config change, and holding it to 0 must log a `FactoryReset` event and reset
+   the web login to `admin`/`admin`.
+4. If the countdown never starts while DI1 is actually closed (or starts while it is open), set
+   `INPUT_ACTIVE_LOW = false`, rebuild, and repeat from step 2.
+5. Once confirmed, replace the `TODO(board-check)` comment with `// Verified on board <date>`.

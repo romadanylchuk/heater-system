@@ -1,9 +1,14 @@
 #pragma once
 #include <unity.h>
 #include <RelayMask.h>
+#include "BackupSuite.h"
+#include "ConfigEngineSuite.h"
+#include "EventLogSuite.h"
+#include "RuntimeSuite.h"
+#include "TimeSuite.h"
 
-// Shared native-safe Unity tests for RelayMask. Header-only so both project test
-// wrappers (test/test_common/test_main.cpp) can include and run it.
+// Shared native-safe Unity tests for RelayMask and CoreEngine. Header-only so both
+// project test wrappers (test/test_common/test_main.cpp) can include and run it.
 
 static_assert(relayAllOffByte(true) == 0xFF, "active-low all-off byte must be 0xFF");
 
@@ -24,4 +29,9 @@ inline void runCommonSuite() {
     RUN_TEST(test_relay_all_off_active_low);
     RUN_TEST(test_relay_all_off_active_high);
     RUN_TEST(test_relay_all_off_constant_matches_config);
+    runEventLogSuite();
+    runConfigEngineSuite();
+    runBackupSuite();
+    runRuntimeSuite();
+    runTimeSuite();
 }

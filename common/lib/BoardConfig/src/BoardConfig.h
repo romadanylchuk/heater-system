@@ -12,6 +12,10 @@ constexpr uint8_t DS1307_ADDR          = 0x68;
 constexpr uint8_t RELAY_CHANNEL_COUNT  = 6;     // R1..R6 = PCF8574 P0..P5
 constexpr uint8_t FACTORY_RESET_INPUT  = 0;     // DI1 = PCF8574 @0x22 bit 0 (reserved)
 
+// TODO(board-check): KC868-A6 opto inputs pull the PCF8574 pin low when closed;
+// confirm with DI1 on the real board using the README bring-up checklist.
+constexpr bool INPUT_ACTIVE_LOW = true;
+
 // Relay map (comment table): R1 P1 / K2, R2 P2 / K1 motor power,
 // R3 P3 / K1 direction, R4 spare / P4, R5-R6 spare / spare  (boiler-room / home-heating)
 

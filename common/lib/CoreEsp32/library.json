@@ -1,0 +1,7 @@
+{
+  "name": "CoreEsp32",
+  "version": "0.1.0",
+  "description": "ESP32-only adapters for CoreEngine: NVS KvStore, FreeRTOS command queue, DS1307 I2C driver, RTC+SNTP TimeService, task watchdog + reset-cause capture, DI1 factory-reset input, and the CoreServices wiring facade used by both main.cpp files.",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

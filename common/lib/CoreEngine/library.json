@@ -1,0 +1,7 @@
+{
+  "name": "CoreEngine",
+  "version": "0.1.0",
+  "description": "Pure, hardware-free firmware core: event catalogue/log, descriptor-driven settings engine, backup codec, common AppState/command model and pure time logic. Native-testable (no Arduino/NVS/FreeRTOS includes).",
+  "platforms": "*",
+  "frameworks": "*"
+}
