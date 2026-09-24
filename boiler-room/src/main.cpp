@@ -4,7 +4,9 @@
 #include <RelayBoot.h>
 #include <CoreServices.h>
 #include <HardwareServices.h>
+#include <ConnectivityServices.h>
 #include "BoilerRoomHardware.h"
+#include "BoilerRoomNet.h"
 #include "BoilerRoomSchema.h"
 
 #ifndef FW_VERSION
@@ -16,6 +18,9 @@ static const char* const PROJECT_NAME = "boiler-room";
 static CommonState state{};
 static CoreServices core(state, BOILER_ROOM_SCHEMA, FW_VERSION);
 static HardwareServices hw(state, core, BOILER_ROOM_HW);
+// Stage 04: Wi-Fi/setup AP, mDNS, MQTT + HA discovery, web OTA/espota,
+// rollback health. Control never depends on it (it only posts commands).
+static ConnectivityServices net(state, core, hw, BOILER_ROOM_NET, BOILER_ROOM_HW);
 
 void setup() {
     // SAFETY: must remain the first statements of setup()
@@ -31,6 +36,7 @@ void setup() {
 
     core.begin(Wire);
     hw.begin(Wire);
+    net.begin();  // after core + hardware: relays are already driven by HwRuntime
 }
 
 void loop() {
@@ -42,7 +48,11 @@ void loop() {
         lastSlow = start;
         core.tick();
         hw.tick();
+        net.tick();
     }
+    // net.fastTick() first: it drains OTA start/end signals and applies the
+    // relay inhibit before hw.fastTick() writes the relay port.
+    net.fastTick();
     hw.fastTick();
     const uint32_t spent = millis() - start;
     delay(spent < HW_FAST_TICK_MS ? HW_FAST_TICK_MS - spent : 1);

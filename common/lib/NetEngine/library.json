@@ -1,0 +1,7 @@
+{
+  "name": "NetEngine",
+  "version": "0.1.0",
+  "description": "pure connectivity logic, native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

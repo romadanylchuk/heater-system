@@ -14,11 +14,33 @@
 // additively; nothing that read relays/oneWire before stage 03 is broken.
 constexpr size_t ONE_WIRE_MAX_DEVICES = 12;
 
+// Stage 04 (connectivity): Wi-Fi/AP text field sizes and version string size.
+constexpr size_t NET_IP_TEXT_LEN = 15;     // "255.255.255.255"
+constexpr size_t NET_NAME_TEXT_LEN = 32;   // SSID / hostname / AP SSID
+constexpr size_t VERSION_TEXT_LEN = 40;
+
+enum class NetWifiMode : uint8_t { Off = 0, Station, SetupAp, SetupApJoining };
+enum class OtaSource : uint8_t { None = 0, Web, Espota };
+enum class OtaBootOutcome : uint8_t { Normal = 0, Trial, UpdatedNoRollback, RolledBack };
+
 struct NetworkStatus {
     bool wifiConnected;
     int8_t wifiRssi;
-    bool mqttConnected;
+    bool mqttConnected;    // effective: transport connected AND Wi-Fi up (stage 04)
     bool setupApActive;
+    NetWifiMode wifiMode;
+    char ip[NET_IP_TEXT_LEN + 1];
+    char ssid[NET_NAME_TEXT_LEN + 1];
+    char hostname[NET_NAME_TEXT_LEN + 1];
+    char apSsid[NET_NAME_TEXT_LEN + 1];
+    char apIp[NET_IP_TEXT_LEN + 1];
+    uint32_t wifiDownS;
+    uint32_t wifiConnectCount;
+    bool scanRunning;
+    uint8_t scanCount;
+    bool mqttEnabled;
+    uint32_t mqttConnectCount;
+    uint32_t mqttDroppedCommands;
 };
 
 enum class TimeSourceKind : uint8_t { None, Rtc, Ntp };
@@ -55,6 +77,7 @@ struct OneWireScan {
     bool tempValid[ONE_WIRE_MAX_DEVICES];
     bool overflow;
     uint32_t scanCount;
+    uint32_t readCycleCount;  // stage 04: completed bus-read cycles (OTA rollback health input)
 };
 
 struct RelayArray {
@@ -62,6 +85,7 @@ struct RelayArray {
     RelayChannelStatus channel[RELAY_CHANNEL_COUNT];
     bool ioError;
     uint32_t ioErrorCount;
+    bool inhibited;  // stage 04: OTA output inhibit active (D13)
 };
 
 enum class ResetGatePhase : uint8_t { Inactive, Countdown, Aborted, Confirmed };
@@ -78,6 +102,20 @@ struct SystemStatus {
     uint8_t lastCommandStatus;
 };
 
+struct OtaStatus {
+    bool inProgress;
+    OtaSource source;
+    OtaBootOutcome bootOutcome;
+    bool pendingVerify;
+    uint16_t verifyRemainingS;
+};
+
+struct VersionStatus {
+    char fw[VERSION_TEXT_LEN + 1];
+    char web[VERSION_TEXT_LEN + 1];
+    bool webMismatch;
+};
+
 class EventLog;
 
 struct CommonState {
@@ -90,6 +128,8 @@ struct CommonState {
     SensorArray sensors;
     K1Status k1;
     AntiSeizeStatus antiSeize;
+    OtaStatus ota;
+    VersionStatus versions;
     SystemStatus system;
     const EventLog* eventLog;  // read-only view of the service's RAM ring, no copy (D21)
 };

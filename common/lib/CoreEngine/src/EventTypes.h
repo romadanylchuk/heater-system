@@ -93,6 +93,7 @@ constexpr uint16_t EVENT_SOURCE_MQTT = 7;
 constexpr uint16_t EVENT_SOURCE_WATCHDOG = 8;
 constexpr uint16_t EVENT_SOURCE_DI1 = 9;
 constexpr uint16_t EVENT_SOURCE_WEB = 10;
+constexpr uint16_t EVENT_SOURCE_OTA = 11;
 
 // Base offsets for sources that are indexed by descriptor position (e.g.
 // EVENT_SOURCE_SETTING_BASE + settingIndex).

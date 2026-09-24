@@ -64,6 +64,15 @@ public:
 
     void fillStatus(RelayArray& out, uint64_t nowMs) const;
 
+    // OTA output inhibit (stage 04, D13). true: every configured channel whose actual
+    // state is ON switches OFF now (lastChangeMs = nowMs, hasChanged, lastReason =
+    // RelayReason::Inhibit, RelayChanged logged when logChanges, aux = Inhibit);
+    // while inhibited update() keeps every channel OFF (above the safety slot), never
+    // sets lockDelayed and logs nothing. false: normal arbitration resumes at the next
+    // update(); the lock window counts from the inhibit OFF switch. Idempotent.
+    void setInhibited(bool inhibited, uint64_t nowMs, EventSink& events);
+    bool inhibited() const { return _inhibited; }
+
 private:
     struct Slot {
         bool configured = false;
@@ -99,6 +108,7 @@ private:
 
     Slot _slots[RELAY_CHANNEL_COUNT];
     uint32_t _lockMs = 0;
+    bool _inhibited = false;
 
     Slot* slotFor(uint8_t channel);
     const Slot* slotFor(uint8_t channel) const;

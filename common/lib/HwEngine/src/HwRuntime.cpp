@@ -59,6 +59,11 @@ HwStatus HwRuntime::begin(const HwProjectConfig& cfg, uint64_t nowMs) {
     _antiSeize.configure(cfg.antiSeize, cfg.antiSeizeCount, nowMs);
 
     _ready = true;
+    // Reconcile a pending pre-ready inhibit request (setOutputsInhibited()
+    // only stores the flag while !_ready): RelayBank must reflect it the
+    // instant the runtime becomes ready, so normal arbitration never runs
+    // even briefly while the system still believes outputs are inhibited.
+    _relays.setInhibited(_outputsInhibited, nowMs, _events);
     pushSettings();
 
     _state.k1.present = cfg.k1.present;
@@ -118,7 +123,9 @@ void HwRuntime::tick(uint64_t nowMs, const LocalTimeInfo& local) {
 
     pushSettings();
     _sensors.tick(nowMs);
-    _antiSeize.tick(nowMs, local);
+    if (!_outputsInhibited) {
+        _antiSeize.tick(nowMs, local);
+    }
 
     fastTick(nowMs);
 
@@ -128,9 +135,17 @@ void HwRuntime::tick(uint64_t nowMs, const LocalTimeInfo& local) {
 
 void HwRuntime::fastTick(uint64_t nowMs) {
     if (_ready && _cfg->k1.present) {
-        _k1.tick(nowMs);
-        _relays.requestControl(_cfg->k1.powerChannel, _k1.powerOn(), RelayReason::K1Drive);
-        _relays.requestControl(_cfg->k1.directionChannel, _k1.directionOpen(), RelayReason::K1Drive);
+        if (_outputsInhibited) {
+            // Skip the K1 tick/replay while inhibited; cancel any still-busy
+            // run so it does not resume once the inhibit is released (D13).
+            if (_k1.busy()) {
+                _k1.cancel(nowMs);
+            }
+        } else {
+            _k1.tick(nowMs);
+            _relays.requestControl(_cfg->k1.powerChannel, _k1.powerOn(), RelayReason::K1Drive);
+            _relays.requestControl(_cfg->k1.directionChannel, _k1.directionOpen(), RelayReason::K1Drive);
+        }
     }
     if (_ready) {
         _relays.update(nowMs, _events);
@@ -156,6 +171,24 @@ void HwRuntime::fastTick(uint64_t nowMs) {
     }
 
     updateRelayAndK1Status(nowMs);
+}
+
+void HwRuntime::setOutputsInhibited(bool inhibited, uint64_t nowMs) {
+    if (_outputsInhibited == inhibited) {
+        return;  // idempotent, mirroring RelayBank::setInhibited's own guard
+    }
+    _outputsInhibited = inhibited;
+
+    if (inhibited) {
+        if (_ready && _cfg->k1.present) {
+            _k1.cancel(nowMs);
+        }
+        if (_ready) {
+            _relays.setInhibited(true, nowMs, _events);
+        }
+    } else if (_ready) {
+        _relays.setInhibited(false, nowMs, _events);
+    }
 }
 
 void HwRuntime::updateRelayAndK1Status(uint64_t nowMs) {

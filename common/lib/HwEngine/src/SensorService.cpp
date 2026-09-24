@@ -144,6 +144,7 @@ void SensorService::fillStatus(CommonState& state) const {
     state.oneWire.done = _scanDone;
     state.oneWire.overflow = _scanOverflow;
     state.oneWire.scanCount = _scanRunCount;
+    state.oneWire.readCycleCount = _readCycles;
     for (size_t i = 0; i < _scanDeviceCount; ++i) {
         memcpy(state.oneWire.address[i], _scanAddr[i], 8);
         state.oneWire.logical[i] = _scanLogical[i];
@@ -389,6 +390,7 @@ void SensorService::busCycle(uint64_t nowMs) {
         }
     }
 
+    ++_readCycles;
     _pendingRead = false;
 }
 

@@ -17,7 +17,9 @@ heater-system/
 │   │   ├── CoreEngine/         pure, native-testable firmware core (see "Core engine" below)
 │   │   ├── CoreEsp32/          ESP32-only adapters for CoreEngine (NVS, RTC, SNTP, watchdog, DI1)
 │   │   ├── HwEngine/           pure, native-testable relay/K1/DS18B20/anti-seize logic (see "Hardware services" below)
-│   │   └── HwEsp32/            ESP32-only adapters for HwEngine (PCF8574, OneWire/DallasTemperature)
+│   │   ├── HwEsp32/            ESP32-only adapters for HwEngine (PCF8574, OneWire/DallasTemperature)
+│   │   ├── NetEngine/          pure, native-testable Wi-Fi/MQTT/HA/OTA logic (see "Connectivity" below)
+│   │   └── NetEsp32/           ESP32-only Wi-Fi/mDNS/MQTT/OTA adapters, web server, ConnectivityServices
 │   ├── web/                    shared web UI sources (style.css, lang/); assembled into <project>/data/
 │   ├── scripts/                PlatformIO pre-scripts (fw_version.py, web_assemble.py)
 │   └── test/                   CommonSuite.h — native tests shared by both projects
@@ -195,6 +197,214 @@ statements, unchanged from stage 02; `hw.begin(Wire)` runs after `core.begin(Wir
 writes the all-OFF byte on every `fastTick()` until `hw.begin()` has completed successfully, so the
 relays stay in the SAFETY state through any startup delay or hardware-init failure.
 
+## Connectivity (stage 04)
+
+Wi-Fi, the setup access point, mDNS, MQTT with Home Assistant discovery, web OTA, espota and OTA
+rollback. Split the same way as the core and the hardware services:
+
+- **`common/lib/NetEngine`** is pure C++ and native-tested. It holds every decision:
+  - the Wi-Fi supervisor, the MQTT session and backoff;
+  - the HA entity registry and the discovery/state/event payload builders;
+  - the inbound command parser, the throttled publisher;
+  - the OTA session guard, boot classification and health check;
+  - the version/JSON builders;
+  - `ConnectivityRuntime`, the orchestrator behind the `WifiPort`, `MqttTransport`, `OtaPlatform`
+    and `KvStore` interfaces.
+- **`common/lib/NetEsp32`** is ESP32-only glue: `EspWifiPort` (WiFi + ESPmDNS),
+  `AsyncMqttTransport`, `EspOtaPlatform` (esp_ota_* + the strong `verifyRollbackLater()`),
+  `EspotaService` (ArduinoOTA), `WebServerHost` (the `AsyncWebServer`, admin auth, ElegantOTA,
+  the setup/Wi-Fi/version endpoints) and the **`ConnectivityServices`** facade that both `main.cpp`
+  files construct next to `CoreServices`/`HardwareServices`.
+
+**Purity rule.** `NetEngine`, `CoreEngine` and `HwEngine` must never include Arduino, WiFi, `esp_*`,
+FreeRTOS, AsyncMqttClient, ElegantOTA, ESPAsyncWebServer, NVS or LittleFS headers. This check must
+print nothing (comment lines aside):
+
+```sh
+grep -rEn "Arduino\.h|WiFi|esp_|freertos|FreeRTOS|AsyncMqtt|ElegantOTA|ESPAsync|nvs\.h|LittleFS" \
+  common/lib/NetEngine common/lib/CoreEngine common/lib/HwEngine
+```
+
+**Control never depends on the network.** Wi-Fi, MQTT and HA only post commands to the core's
+command queue and read `CommonState`. No network call blocks the loop, except espota's own upload,
+which feeds the watchdog while it runs. A router or broker outage leaves heating control untouched.
+
+### Main loop with connectivity
+
+`setup()` still starts with `Wire.begin` + `RelayBoot::forceAllOff` as its first two statements. Then
+it calls `core.begin(Wire); hw.begin(Wire); net.begin();`, so connectivity starts after the core and
+hardware are running. In `loop()`:
+
+- The ~1 s slow pass runs `core.tick()` (drains commands, feeds the 15 s watchdog), then `hw.tick()`,
+  then `net.tick()`.
+- Every 100 ms pass runs `net.fastTick()` and then `hw.fastTick()`. The network side drains OTA
+  start/end signals and applies the relay inhibit before the relay port is written.
+
+### Identities (never plain `boiler` / `home`)
+
+| | boiler-room | home-heating |
+|---|---|---|
+| MQTT prefix, hostname, discovery node id | `boiler-room` | `home-heating` |
+| mDNS name | `boiler-room.local` | `home-heating.local` |
+| HA `unique_id` prefix / device identifier | `boiler_room` | `home_heating` |
+| HA device name / model | `Boiler room` / `KC868-A6 boiler-room` | `Home heating` / `KC868-A6 home-heating` |
+| Setup AP SSID (open) | `BoilerRoom-Setup` | `HomeHeating-Setup` |
+
+They are declared in `boiler-room/src/BoilerRoomNet.h` and `home-heating/src/HomeHeatingNet.h`.
+
+### Wi-Fi and the setup access point
+
+- **The setup AP starts only when no Wi-Fi SSID is saved.** That happens at first boot, after a
+  factory reset, or when the SSID is cleared at runtime. The AP is open, runs at `192.168.4.1` and
+  serves `http://192.168.4.1/setup`. The page asks for the **admin web login**, which is
+  `admin`/`admin` after a factory reset. It can scan for networks and save an SSID and password.
+- After a save, the AP stays up until the station joins, plus 10 s so the page can show the new IP.
+  It stays up at most 120 s after the save. After that the device is station-only.
+- **Reconnect.** Link loss triggers an immediate attempt. Retries then run every 10 s, growing by 5 s
+  per failure up to 30 s, forever. Outages longer than 30 s are logged (`WifiDisconnected`,
+  `WifiConnected`).
+- **A saved but unreachable network never brings the AP back.** A router outage therefore never opens
+  an access point. The consequence: **if the Wi-Fi password was typed wrong, the device will not
+  return to the setup AP.** It retries the wrong credentials forever. The fix is a **factory reset**
+  (DI1 procedure above). It erases the settings, including Wi-Fi, so the setup AP comes back on the
+  next boot. You can also re-submit the setup page during the 120 s join window while the AP is still
+  up, or use the Wi-Fi page if the device is reachable on another network.
+- The password must be empty (open network), 8–63 characters, or 64 hex characters. SSID and password
+  are applied together in one loop tick, so only one reconnect follows.
+
+### Admin login on every endpoint
+
+Every stage-04 HTTP endpoint requires the admin web login (`webUser`/`webPass` settings, HTTP digest
+auth). This includes setup-AP mode.
+
+| Route | Purpose |
+|---|---|
+| `GET /setup` | setup page (scan + manual SSID + password) |
+| `GET /api/wifi/status` | mode, SSID, IP, RSSI, setup AP state (no passwords) |
+| `GET /api/wifi/scan`, `POST /api/wifi/scan` | cached scan result / request a scan (202) |
+| `POST /api/wifi` | form `ssid`, `pass`: 200, 400 if invalid, 503 if a change is still pending |
+| `GET /api/version` | firmware + web image version, mismatch flag |
+| `GET /` | 302 to `/setup` only while the setup AP is active, else 404 (stage 05 serves the SPA here) |
+| `/update`, `/update/...`, `/ota/*` | ElegantOTA, guarded before the upload body is accepted |
+
+A credential change takes effect within ~1 s for new requests and for espota.
+
+### MQTT and Home Assistant
+
+MQTT is disabled while `mqttHost` is empty. The default port is 1883. Reconnect backoff is
+5 → 10 → 20 → 40 → 60 s (cap), reset on connect. Only transitions are logged.
+
+| Topic | Content |
+|---|---|
+| `<prefix>/status` | `online` (retained on connect), LWT `offline` (retained, qos 1) |
+| `<prefix>/<key>/state` | entity state (retained), re-published every 60 s and on change |
+| `<prefix>/<key>/set` | commands (one subscription `<prefix>/+/set`) |
+| `<prefix>/event` | event log entries as JSON (not retained, only while connected) |
+| `homeassistant/<component>/<prefix>/<key>/config` | discovery (retained) |
+
+Entity rules (generated from the settings schema and the HW descriptor):
+
+- Keys are snake_case: `relay_lock`, `temp_t1`, `relay_p1`, `relay_k1_power`.
+- Int/Float settings become a `number` (config category, min/max/step/unit from the descriptor).
+- Bool settings with the HA-switch flag (`homeNoNeed`, `heatingEnabled`) become a dashboard
+  `switch`.
+- **Deviation from the architecture:** a plain Bool setting (e.g. `asEnP1`) becomes a config-category
+  `switch`, not a 0..1 number.
+- Text, secret, no-backup and no-HA settings are never exposed: Wi-Fi, MQTT host/port/user/pass,
+  web login, time zone and NTP.
+- Logical sensors become a temperature `sensor` (`None` while faulty). Relays become a
+  `binary_sensor` (`running` for pumps). Every project also gets an `rssi` diagnostic sensor.
+- Incoming `/set` payloads are parsed (numbers or `ON/OFF/1/0/true/false`) and posted to the command
+  queue. The config engine clamps them. The real value is always echoed back. A full queue drops the
+  command and raises a diagnostic warning.
+- **No-need gating:** `haGatedFlag(persisted, state.network)` is true only while the effective MQTT
+  link is up (Wi-Fi up AND the broker connected). The persisted switch is untouched. Stage 07
+  controllers read the gated value, so a lost HA link never leaves "home: no need" in force.
+
+### OTA
+
+- **Web OTA:** ElegantOTA at `http://<prefix>.local/update` (admin digest auth). It accepts a
+  firmware image (`.pio/build/release/firmware.bin`) or a LittleFS image (`littlefs.bin` from
+  `-t buildfs`).
+- **espota** (port 3232). **The espota password is the web password** (`webPass`). It starts on the
+  first Wi-Fi link-up, is recreated when the web password changes, and is disabled while that
+  password is empty. Add this to your local `platformio.ini` override, and **do not commit it**:
+
+  ```ini
+  upload_protocol = espota
+  upload_port     = boiler-room.local   ; or home-heating.local
+  upload_flags    = --auth=<web password>
+  ```
+
+- **Relays are OFF during any update.** On OTA start all relays switch OFF above the safety slot and
+  K1 is cancelled; sensors keep running. On failure, or 60 s without progress, control resumes. The
+  relay lock counts from the OTA switch-off, so pumps may return up to `relayLock` later. Web and
+  espota sessions exclude each other.
+- **Rollback and health check.** A new firmware image boots in trial mode (`verifyRollbackLater()`
+  returns true). It is confirmed after at least 60 s uptime, 50 slow ticks and 10 completed sensor
+  read cycles. A cycle counts even with zero or faulty sensors, so missing sensors never cause a
+  rollback. On confirmation `OtaUpdate(3)` is logged. If the image is not healthy within 300 s, it
+  logs `OtaUpdate(4)` plus a diagnostic warning, forces relays OFF and rolls back. A crash or reset
+  before confirmation is rolled back by the bootloader, and the next boot logs `OtaRollback`.
+- **Bootloader requirement:** rollback needs the rollback-enabled bootloader. PlatformIO's USB upload
+  flashes it; OTA never updates the bootloader. **Flash each board over USB at least once** with this
+  build.
+- The partition table stays `min_spiffs.csv`.
+
+### Version and web-image mismatch
+
+`web_assemble.py` writes a plain `data/version.txt` (the FW version plus a newline) next to
+`version.json.gz`. At boot the firmware mounts LittleFS without formatting, reads it, and unmounts.
+`GET /api/version` reports `project`, `fw`, `web`, `mismatch` and the OTA state (`inProgress`, `pendingVerify`, `bootOutcome`). The mismatch flag is set when a web version
+exists and differs from the firmware's. A missing file gives `web = ""` and no mismatch.
+
+### Stage-05 extension points
+
+- `ConnectivityServices::server()`: the same `AsyncWebServer` on port 80, for more routes and
+  middleware.
+- `ConnectivityServices::adminAuth()`: the same admin credential check.
+
+`GET /` currently answers 404 outside setup-AP mode until stage 05 serves the SPA there.
+
+### Connectivity bring-up checklist (hardware only, NOT TESTED)
+
+Native tests cover every decision (the fakes drive AP → join → MQTT → discovery → OTA → reboot
+request). The items below need a real board, network, broker and Home Assistant. They are **NOT
+TESTED** until done on hardware.
+
+- **K1-free items (1–7):** these need no K1 motor and no sensors, so they can be done on a bare
+  board. Item 5 on home-heating also checks that K1 is idle during an update.
+- **Wiring-dependent item (8)** needs connected pumps.
+
+1. **Setup AP.** Factory-reset, then boot. `BoilerRoom-Setup` / `HomeHeating-Setup` appears (open).
+   Connect and open `http://192.168.4.1/` (302 to `/setup` after the admin login `admin`/`admin`).
+   Scan, pick the network, save. The page shows the new IP, and the AP disappears within ~10 s of the
+   join (at most 120 s).
+2. **Wrong password.** Save a deliberately wrong password. The AP goes away after 120 s and never comes
+   back, and the device keeps retrying. Recover with the DI1 factory reset, and confirm the AP returns.
+3. **Reconnect.** Power-cycle the router. Heating control keeps running. A `WifiDisconnected` event
+   appears after 30 s, and the device rejoins by itself within ≤ 30 s of the router being back.
+4. **mDNS, MQTT and HA discovery.** Check that `ping boiler-room.local` / `home-heating.local`
+   resolves. Set `mqttHost`. The device appears in HA as "Boiler room" / "Home heating" with the
+   expected entities, and no Wi-Fi/MQTT/password entity. `<prefix>/status` shows `online`, and
+   `offline` after pulling power. Toggle `home_no_need` / `heating_enabled` from HA: the value
+   persists and is echoed back. Send `abc` to a number's `/set`: it is echoed back unchanged.
+5. **Web OTA and auth.** `/update` without credentials gets a 401. An authenticated upload of a new
+   `firmware.bin` switches all relays OFF during the upload, the device reboots, and
+   `/api/version` shows the new FW. Upload a `littlefs.bin`: `mismatch` becomes false when the
+   versions match.
+6. **espota.** `pio run -t upload` with the local espota override and `--auth=<web password>`
+   succeeds; a wrong password is refused. Change the web password, and the old one is refused on the
+   next upload.
+7. **Rollback.** Flash (via OTA) a test build that never becomes healthy, for example one that calls
+   `abort()` 20 s after boot. The board must boot back into the previous image and log `OtaRollback`.
+   Also check that a normal OTA logs `OtaUpdate(3)` about 60 s after the reboot. This needs the
+   USB-flashed bootloader.
+8. **Relays during OTA (with pumps wired).** Start an OTA while a pump runs. It stops at the upload
+   start. On an aborted upload (disconnect mid-way), control resumes after ≤ 60 s plus the relay lock.
+   After that aborted upload, a new web upload (and an espota upload) works without a reboot. An
+   empty `/ota/upload` after `/ota/start` logs `OtaUpdate(2)` and does not reboot.
+
 ## Prerequisites
 
 - PlatformIO (VS Code extension `platformio.platformio-ide`, or the `pio` CLI).
@@ -289,6 +499,9 @@ plain `release`/`debug` build never touches `data/`.
   stale files. It is git-ignored — never edit it directly.
 - `data/version.json.gz` is always generated (not sourced from `web/`) with the shape
   `{"project": "<project folder name>", "fw": "<FW_VERSION>"}`.
+- `data/version.txt` is always generated too: the plain, uncompressed FW version plus a newline,
+  read by the firmware at boot for the web/FW mismatch check. A web source with either name loses
+  to the generated file (a warning is printed).
 
 Commands:
 

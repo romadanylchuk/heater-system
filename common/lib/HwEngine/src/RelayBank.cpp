@@ -90,6 +90,21 @@ bool RelayBank::setExercise(uint8_t channel, std::optional<bool> on) {
 }
 
 void RelayBank::update(uint64_t nowMs, EventSink& events) {
+    if (_inhibited) {
+        // Held all-OFF above the safety slot (D13): requests are kept in the
+        // slots but never applied while inhibited, no lock delay is pending,
+        // and nothing is logged.
+        for (uint8_t ch = 0; ch < RELAY_CHANNEL_COUNT; ++ch) {
+            Slot& s = _slots[ch];
+            if (!s.configured) {
+                continue;
+            }
+            s.lockDelayed = false;
+            s.delayLogged = false;
+        }
+        return;
+    }
+
     for (uint8_t ch = 0; ch < RELAY_CHANNEL_COUNT; ++ch) {
         Slot& s = _slots[ch];
         if (!s.configured) {
@@ -233,5 +248,41 @@ void RelayBank::fillStatus(RelayArray& out, uint64_t nowMs) const {
         const uint32_t remMs = lockRemainingMs(ch, nowMs);
         cs.lockRemainingS = static_cast<uint16_t>((remMs + 999) / 1000);
         cs.reason = s.lastReason;
+    }
+    out.inhibited = _inhibited;
+}
+
+void RelayBank::setInhibited(bool inhibited, uint64_t nowMs, EventSink& events) {
+    if (_inhibited == inhibited) {
+        return;  // idempotent: no state change, nothing logged
+    }
+    _inhibited = inhibited;
+
+    if (!_inhibited) {
+        // Release: normal arbitration resumes at the next update(). Channels
+        // that were switched off by the inhibit already have lastChangeMs at
+        // the inhibit-OFF-switch time (set below); the lock window counts
+        // from there (D13), so nothing else to do here.
+        return;
+    }
+
+    for (uint8_t ch = 0; ch < RELAY_CHANNEL_COUNT; ++ch) {
+        Slot& s = _slots[ch];
+        if (!s.configured || !s.actual) {
+            continue;
+        }
+
+        s.actual = false;
+        s.lastChangeMs = nowMs;
+        s.hasChanged = true;
+        s.lastReason = RelayReason::Inhibit;
+        s.lastOnMs = nowMs;  // OFF-switch time recorded, matching update()'s convention
+        s.delayLogged = false;
+        s.lockDelayed = false;
+
+        if (s.logChanges) {
+            events.logEvent(toU16(EventType::RelayChanged), static_cast<uint16_t>(EVENT_SOURCE_RELAY_BASE + ch), 0.0f,
+                static_cast<float>(static_cast<uint8_t>(RelayReason::Inhibit)), EventReason::Logic);
+        }
     }
 }

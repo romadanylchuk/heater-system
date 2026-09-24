@@ -71,6 +71,20 @@ public:
 
     bool ready() const { return _ready; }
 
+    // OTA output inhibit (stage 04, D13). Loop task only; the facade calls it
+    // from the loop (including, for espota, synchronously from the espota
+    // onStart callback on the loop task, followed by an immediate fastTick()).
+    // Works whether or not the runtime is ready: the flag is always stored;
+    // RelayBank::setInhibited() is only called when ready. true: cancels K1
+    // (if present and ready) then inhibits RelayBank -- every actually-ON
+    // channel switches OFF immediately. tick() then skips the anti-seize
+    // scheduler (sensors keep running); fastTick() skips the K1 tick/replay
+    // (cancelling any still-busy K1 run) and keeps writing the RelayBank
+    // output byte (all-OFF while inhibited). false: releases RelayBank so
+    // normal arbitration resumes at the next update().
+    void setOutputsInhibited(bool inhibited, uint64_t nowMs);
+    bool outputsInhibited() const { return _outputsInhibited; }
+
 private:
     void pushSettings();
     void updateRelayAndK1Status(uint64_t nowMs);
@@ -88,6 +102,7 @@ private:
 
     const HwProjectConfig* _cfg = nullptr;
     bool _ready = false;
+    bool _outputsInhibited = false;
 
     size_t _idxLock = 0;
     size_t _idxInterval = 0;

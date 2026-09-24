@@ -571,6 +571,54 @@ static void senssvc_test_backup_import_duplicate_normalised_after_begin() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(SensorState::Unassigned), static_cast<int>(svc2.state(1)));
 }
 
+// Stage 04 (D15 OTA rollback health check input): readCycleCount() advances
+// once per completed request/read pair (CYCLE_MS = 2000 ms), independent of
+// whether any sensor is present/assigned/healthy.
+static void senssvc_test_read_cycles_count_without_sensors() {
+    MemoryKvStore store;
+    RecordingEventSink events;
+    ConfigEngine config(store, events);
+    config.begin(SENSSVC_TEST_SCHEMA, 0);
+    FakeOneWireBus bus;  // no devices at all
+
+    SensorService svc(bus, config, events);
+    TEST_ASSERT_TRUE(svc.begin(SENSSVC_TEST_SENSORS, 3, 0));  // no assignments either
+    TEST_ASSERT_EQUAL_UINT32(0, svc.readCycleCount());
+
+    const int N = 10;
+    senssvc_driveTicks(svc, 0, N * 2);  // N * CYCLE_MS elapsed (1 s sub-ticks)
+
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(N), svc.readCycleCount());
+
+    CommonState state{};
+    svc.fillStatus(state);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(N), state.oneWire.readCycleCount);
+}
+
+static void senssvc_test_read_cycles_count_with_faulty_sensor() {
+    MemoryKvStore store;
+    RecordingEventSink events;
+    ConfigEngine config(store, events);
+    config.begin(SENSSVC_TEST_SCHEMA, 0);
+    uint8_t romA[8];
+    FakeOneWireBus::makeRom(1, romA);
+    char text[SENSOR_ADDRESS_TEXT_LEN + 1];
+    formatAddress(romA, text);
+    config.setText(SENS_IDX_A, text, EventReason::Boot, 0);  // assigned, but never on the bus
+
+    FakeOneWireBus bus;  // romA absent -> the assigned sensor stays missing/faulted
+    SensorService svc(bus, config, events);
+    TEST_ASSERT_TRUE(svc.begin(SENSSVC_TEST_SENSORS, 3, 0));
+    TEST_ASSERT_TRUE(svc.missing(0));
+
+    const int N = 5;
+    senssvc_driveTicks(svc, 0, N * 2);
+
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(N), svc.readCycleCount());
+    TEST_ASSERT_TRUE(svc.missing(0));  // still faulted -- the cycle counter is not gated on sensor health
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SensorState::Fault), static_cast<int>(svc.state(0)));
+}
+
 static void senssvc_test_fill_status_preserves_other_alarm_bits() {
     MemoryKvStore store;
     RecordingEventSink events;
@@ -614,4 +662,6 @@ inline void runSensorServiceSuite() {
     RUN_TEST(senssvc_test_backup_roundtrip_preserves_mapping);
     RUN_TEST(senssvc_test_backup_import_duplicate_normalised_after_begin);
     RUN_TEST(senssvc_test_fill_status_preserves_other_alarm_bits);
+    RUN_TEST(senssvc_test_read_cycles_count_without_sensors);
+    RUN_TEST(senssvc_test_read_cycles_count_with_faulty_sensor);
 }

@@ -382,6 +382,160 @@ static void hwrt_test_anti_seize_enable_setting_flows_from_config() {
     TEST_ASSERT_TRUE(f.state.antiSeize.output[1].enabled);
 }
 
+// --- Stage 04 D13: OTA output inhibit -------------------------------------
+
+static void hwrt_test_inhibit_writes_all_off_and_cancels_k1() {
+    HwrtFixture f;
+    TEST_ASSERT_TRUE(f.beginConfig(HWRT_SCHEMA));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HwStatus::Ok), static_cast<int>(f.hw.begin(HWRT_CFG, 0)));
+
+    uint64_t t = 0;
+    f.hw.fastTick(t);  // establish the all-off baseline byte
+
+    TEST_ASSERT_TRUE(f.hw.k1().requestPulse(K1Direction::Open, 5000, t));
+    t += 2000;
+    f.hw.fastTick(t);
+    TEST_ASSERT_TRUE(f.hw.k1().busy());  // mid-run: past dead time, well before the 5s pulse ends
+
+    f.hw.setOutputsInhibited(true, t);
+    TEST_ASSERT_FALSE(f.hw.k1().busy());  // cancelled immediately, on the loop task, by setOutputsInhibited()
+
+    t += 100;
+    f.hw.fastTick(t);
+
+    TEST_ASSERT_EQUAL_UINT8(RELAY_ALL_OFF_BYTE, f.port.last());
+    TEST_ASSERT_TRUE(f.state.relays.inhibited);
+    TEST_ASSERT_FALSE(f.state.k1.busy);
+}
+
+static void hwrt_test_inhibit_keeps_sensor_cycles() {
+    HwrtFixture f;
+    TEST_ASSERT_TRUE(f.beginConfig(HWRT_SCHEMA));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HwStatus::Ok), static_cast<int>(f.hw.begin(HWRT_CFG, 0)));
+
+    f.hw.setOutputsInhibited(true, 0);
+    TEST_ASSERT_TRUE(f.hw.outputsInhibited());
+
+    const uint32_t before = f.hw.sensors().readCycleCount();
+
+    uint64_t t = 0;
+    for (int i = 0; i < 10; ++i) {
+        t += 1000;
+        f.hw.tick(t, NO_LOCAL_TIME);
+        TEST_ASSERT_TRUE(f.hw.outputsInhibited());  // still inhibited throughout
+    }
+
+    TEST_ASSERT_TRUE(f.hw.sensors().readCycleCount() > before);
+    TEST_ASSERT_EQUAL_UINT32(f.hw.sensors().readCycleCount(), f.state.oneWire.readCycleCount);
+}
+
+static void hwrt_test_uninhibit_restores_control_after_lock() {
+    HwrtFixture f;
+    TEST_ASSERT_TRUE(f.beginConfig(HWRT_SCHEMA));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HwStatus::Ok), static_cast<int>(f.hw.begin(HWRT_CFG, 0)));  // boot at t=0
+
+    const int idxLock = f.config.indexOf(HW_KEY_RELAY_LOCK);
+    TEST_ASSERT_TRUE(idxLock >= 0);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok),
+        static_cast<int>(f.config.setNumber(static_cast<size_t>(idxLock), 5, EventReason::Web, 0)));  // 5s lock
+
+    TEST_ASSERT_TRUE(f.hw.relays().requestControl(3, true));  // P4 ON
+    f.hw.tick(6000, NO_LOCAL_TIME);  // pushes the 5s lock; 6000ms since boot >= 5000ms: P4 turns ON
+    TEST_ASSERT_TRUE(f.hw.relays().actual(3));
+
+    f.hw.setOutputsInhibited(true, 7000);
+    TEST_ASSERT_FALSE(f.hw.relays().actual(3));
+
+    f.hw.setOutputsInhibited(false, 8000);
+
+    // The still-pending control request waits the 5s lock from the inhibit OFF
+    // switch (t=7000), not from the release time (t=8000).
+    f.hw.tick(7000 + 4999, NO_LOCAL_TIME);
+    TEST_ASSERT_FALSE(f.hw.relays().actual(3));
+
+    f.hw.tick(7000 + 5000, NO_LOCAL_TIME);
+    TEST_ASSERT_TRUE(f.hw.relays().actual(3));
+}
+
+static void hwrt_test_inhibit_before_ready_is_harmless() {
+    HwrtFixture f;  // begin() never called: not ready
+
+    f.hw.setOutputsInhibited(true, 0);
+    TEST_ASSERT_TRUE(f.hw.outputsInhibited());
+
+    f.hw.fastTick(100);
+    TEST_ASSERT_EQUAL_UINT8(RELAY_ALL_OFF_BYTE, f.port.last());
+
+    f.hw.setOutputsInhibited(false, 200);
+    TEST_ASSERT_FALSE(f.hw.outputsInhibited());
+
+    f.hw.fastTick(300);
+    TEST_ASSERT_EQUAL_UINT8(RELAY_ALL_OFF_BYTE, f.port.last());
+}
+
+// A pre-ready inhibit request must be reconciled into RelayBank the instant
+// begin() makes the runtime ready (review-2 must-fix): setOutputsInhibited()
+// only stores the flag while !_ready, so begin() has to apply it explicitly.
+static void hwrt_test_pending_inhibit_applied_when_begin_becomes_ready() {
+    HwrtFixture f;
+    TEST_ASSERT_TRUE(f.beginConfig(HWRT_SCHEMA));
+
+    f.hw.setOutputsInhibited(true, 0);  // requested while not ready: flag-only
+    TEST_ASSERT_TRUE(f.hw.outputsInhibited());
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HwStatus::Ok), static_cast<int>(f.hw.begin(HWRT_CFG, 0)));
+
+    // The fix: RelayBank/state must already report inhibited right out of begin().
+    TEST_ASSERT_TRUE(f.hw.relays().inhibited());
+    TEST_ASSERT_TRUE(f.state.relays.inhibited);
+
+    // A control request (K2, ch0) and a safety request (P4, ch3) must both stay
+    // OFF in the written port byte over several fast ticks -- normal
+    // arbitration must not resume just because begin() succeeded.
+    TEST_ASSERT_TRUE(f.hw.relays().requestControl(0, true));
+    TEST_ASSERT_TRUE(f.hw.relays().requestSafety(3, true));
+
+    uint64_t t = 0;
+    for (int i = 0; i < 5; ++i) {
+        t += 100;
+        f.hw.fastTick(t);
+        TEST_ASSERT_EQUAL_UINT8(RELAY_ALL_OFF_BYTE, f.port.last());
+        TEST_ASSERT_FALSE(f.hw.relays().actual(0));
+        TEST_ASSERT_FALSE(f.hw.relays().actual(3));
+    }
+
+    // K1 must not be driven either: a pulse requested while inhibited is
+    // accepted by K1Driver itself (it does not know about the inhibit), but
+    // fastTick's inhibited branch cancels it right back out instead of
+    // ticking/replaying it into RelayBank, so it never actually runs.
+    TEST_ASSERT_TRUE(f.hw.k1().requestPulse(K1Direction::Open, 2000, t));
+    TEST_ASSERT_TRUE(f.hw.k1().busy());
+    t += 100;
+    f.hw.fastTick(t);
+    TEST_ASSERT_FALSE(f.hw.k1().busy());
+    TEST_ASSERT_FALSE(f.hw.k1().powerOn());
+    TEST_ASSERT_EQUAL_UINT8(RELAY_ALL_OFF_BYTE, f.port.last());
+
+    // Suggestion: the anti-seize scheduler must not run while inhibited
+    // either -- jump well past the default 7-day interval (clock invalid, so
+    // the uptime trigger applies) and confirm the K2 toggle output (anti-seize
+    // index 1, unblocked by the control/safety requests above) stays idle
+    // instead of starting, because tick() skips _antiSeize.tick() entirely
+    // while outputsInhibited() is true.
+    const uint64_t pastIntervalMs = 7ull * 86400000ull + 1000;
+    f.hw.tick(pastIntervalMs, NO_LOCAL_TIME);
+    TEST_ASSERT_FALSE(f.hw.antiSeize().pending(1));
+    TEST_ASSERT_FALSE(f.hw.antiSeize().running(1));
+
+    // Release: normal arbitration resumes. The safety request bypasses the
+    // lock and turns ON immediately.
+    f.hw.setOutputsInhibited(false, pastIntervalMs);
+    f.hw.fastTick(pastIntervalMs + 100);
+    TEST_ASSERT_FALSE(f.hw.relays().inhibited());
+    TEST_ASSERT_FALSE(f.state.relays.inhibited);
+    TEST_ASSERT_TRUE(f.hw.relays().actual(3));  // safety, bypasses the lock
+}
+
 // Runs every test in this suite. Call from runHwSuite().
 inline void runHwRuntimeSuite() {
     RUN_TEST(hwrt_test_begin_ok);
@@ -395,4 +549,9 @@ inline void runHwRuntimeSuite() {
     RUN_TEST(hwrt_test_command_path_through_real_core_runtime);
     RUN_TEST(hwrt_test_state_populated_after_tick);
     RUN_TEST(hwrt_test_anti_seize_enable_setting_flows_from_config);
+    RUN_TEST(hwrt_test_inhibit_writes_all_off_and_cancels_k1);
+    RUN_TEST(hwrt_test_inhibit_keeps_sensor_cycles);
+    RUN_TEST(hwrt_test_uninhibit_restores_control_after_lock);
+    RUN_TEST(hwrt_test_inhibit_before_ready_is_harmless);
+    RUN_TEST(hwrt_test_pending_inhibit_applied_when_begin_becomes_ready);
 }

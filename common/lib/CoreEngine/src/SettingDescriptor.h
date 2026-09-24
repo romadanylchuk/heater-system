@@ -10,7 +10,8 @@ enum class SettingType : uint8_t { Int, Float, Bool, Text };
 
 constexpr uint8_t SETTING_FLAG_NO_BACKUP = 0x01;  // excluded from backup (Wi-Fi)
 constexpr uint8_t SETTING_FLAG_SECRET    = 0x02;  // value never logged/published; web masks it
-constexpr uint8_t SETTING_FLAG_HA_SWITCH = 0x04;  // exposed as an HA switch (stage 04)
+constexpr uint8_t SETTING_FLAG_HA_SWITCH = 0x04;  // dashboard HA switch (stage 04)
+constexpr uint8_t SETTING_FLAG_NO_HA     = 0x08;  // never exposed as an HA entity (connection/access settings)
 
 constexpr size_t SETTING_KEY_MAX_LEN = 31;
 constexpr size_t SETTING_TEXT_MAX_LEN = 64;

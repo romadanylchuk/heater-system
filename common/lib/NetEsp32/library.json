@@ -1,0 +1,7 @@
+{
+  "name": "NetEsp32",
+  "version": "0.1.0",
+  "description": "ESP32-only adapters for NetEngine: EspWifiPort (WiFi + ESPmDNS), AsyncMqttTransport (AsyncMqttClient), EspOtaPlatform (esp_ota_ops + the strong verifyRollbackLater() override), WebServerHost (AsyncWebServer + AdminAuth + ElegantOTA + setup/Wi-Fi/version endpoints), EspotaService and the ConnectivityServices facade.",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

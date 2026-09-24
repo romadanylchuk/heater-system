@@ -59,12 +59,15 @@ def assemble(common_web, project_web, data_dir, project_name, version):
     for relpath, abspath in _iter_files(project_web):
         entries[relpath] = abspath
 
-    if "version.json" in entries:
-        print("web_assemble: warning: a web source maps to 'version.json'; the generated file wins")
+    # Generated files always win over a web source with the same name.
+    generated = ("version.json", "version.txt")
+    for name in generated:
+        if name in entries:
+            print("web_assemble: warning: a web source maps to %r; the generated file wins" % (name,))
 
     count = 0
     for relpath, abspath in entries.items():
-        if relpath == "version.json":
+        if relpath in generated:
             continue
         dst = os.path.join(data_dir, relpath + ".gz")
         _write_gz(dst, abspath)
@@ -75,6 +78,12 @@ def assemble(common_web, project_web, data_dir, project_name, version):
     with open(version_dst, "wb") as raw_out:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw_out, compresslevel=9, mtime=0) as gz_out:
             gz_out.write(version_payload)
+    count += 1
+
+    # Plain (uncompressed) web image version for the firmware's mismatch check
+    # (stage 04, D19): read once at boot by ConnectivityServices, no inflate.
+    with open(os.path.join(data_dir, "version.txt"), "wb") as txt_out:
+        txt_out.write((version + "\n").encode("utf-8"))
     count += 1
 
     print("web_assemble: %d files -> %s" % (count, data_dir))

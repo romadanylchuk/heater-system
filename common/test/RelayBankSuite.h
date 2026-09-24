@@ -331,6 +331,114 @@ static void relay_test_64bit_time_above_2_32_ms_no_wrap() {
     TEST_ASSERT_TRUE(bank.actual(0));
 }
 
+// --- Stage 04 D13: OTA output inhibit -------------------------------------
+
+static void relay_test_inhibit_forces_all_off_and_logs() {
+    RelayBank bank;
+    RecordingEventSink events;
+    bank.configure(RELAY_TEST_CHANNELS, 3, 0);
+    bank.setLockMs(0);
+
+    bank.requestControl(0, true);  // P1 via control
+    bank.update(0, events);
+    TEST_ASSERT_TRUE(bank.actual(0));
+
+    bank.requestSafety(2, true);  // P2 via safety
+    bank.update(100, events);
+    TEST_ASSERT_TRUE(bank.actual(2));
+
+    const size_t beforeCount = events.count();  // both channels already logged their boot->ON switch
+
+    TEST_ASSERT_FALSE(bank.inhibited());
+    bank.setInhibited(true, 200, events);
+
+    TEST_ASSERT_TRUE(bank.inhibited());
+    TEST_ASSERT_FALSE(bank.actual(0));
+    TEST_ASSERT_FALSE(bank.actual(2));
+    TEST_ASSERT_EQUAL_UINT8(0x00, bank.outputByte(false));  // all-OFF byte
+
+    // Exactly 2 new RelayChanged logs (one per channel switched OFF by the inhibit).
+    TEST_ASSERT_EQUAL_INT(2, static_cast<int>(events.count() - beforeCount));
+
+    for (size_t i = beforeCount; i < events.count(); ++i) {
+        const RecordingEventSink::Record& rec = events.at(i);
+        TEST_ASSERT_EQUAL_UINT16(toU16(EventType::RelayChanged), rec.type);
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, rec.value);  // OFF
+        TEST_ASSERT_EQUAL_FLOAT(static_cast<float>(static_cast<uint8_t>(RelayReason::Inhibit)), rec.aux);
+    }
+}
+
+static void relay_test_inhibit_holds_off_against_requests() {
+    RelayBank bank;
+    RecordingEventSink events;
+    bank.configure(RELAY_TEST_CHANNELS, 3, 0);
+    bank.setLockMs(0);
+
+    bank.setInhibited(true, 0, events);  // nothing was ON: no log
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(events.countOf(EventType::RelayChanged)));
+
+    bank.requestControl(0, true);
+    bank.requestSafety(2, true);
+    bank.update(1000, events);
+
+    TEST_ASSERT_FALSE(bank.actual(0));
+    TEST_ASSERT_FALSE(bank.actual(2));
+    TEST_ASSERT_FALSE(bank.lockDelayed(0));
+    TEST_ASSERT_FALSE(bank.lockDelayed(2));
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(events.countOf(EventType::RelayLockDelay)));
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(events.countOf(EventType::RelayChanged)));
+}
+
+static void relay_test_uninhibit_safety_immediate_control_waits_lock() {
+    RelayBank bank;
+    RecordingEventSink events;
+    bank.configure(RELAY_TEST_CHANNELS, 3, 0);
+    bank.setLockMs(0);
+
+    bank.requestControl(0, true);  // P1
+    bank.update(0, events);
+    TEST_ASSERT_TRUE(bank.actual(0));
+
+    bank.setLockMs(60000);
+
+    bank.setInhibited(true, 1000, events);  // P1 forced OFF at t=1000
+    TEST_ASSERT_FALSE(bank.actual(0));
+
+    bank.setInhibited(false, 2000, events);  // release; lastChangeMs(0) stays 1000
+
+    // Safety on P2 applies immediately, bypassing the lock.
+    bank.requestSafety(2, true);
+    bank.update(2100, events);
+    TEST_ASSERT_TRUE(bank.actual(2));
+
+    // P1's still-pending control request waits the 60s lock from the inhibit
+    // OFF switch (t=1000), not from the release time (t=2000).
+    bank.update(1000 + 59999, events);
+    TEST_ASSERT_FALSE(bank.actual(0));
+    TEST_ASSERT_TRUE(bank.lockDelayed(0));
+
+    bank.update(1000 + 60000, events);
+    TEST_ASSERT_TRUE(bank.actual(0));
+}
+
+static void relay_test_inhibit_idempotent() {
+    RelayBank bank;
+    RecordingEventSink events;
+    bank.configure(RELAY_TEST_CHANNELS, 3, 0);
+    bank.setLockMs(0);
+
+    bank.requestControl(0, true);
+    bank.update(0, events);
+    TEST_ASSERT_TRUE(bank.actual(0));
+
+    bank.setInhibited(true, 100, events);
+    const size_t afterFirst = events.count();
+
+    bank.setInhibited(true, 200, events);  // already inhibited: idempotent, no new log
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(afterFirst), static_cast<int>(events.count()));
+    TEST_ASSERT_TRUE(bank.inhibited());
+}
+
 // Runs every test in this suite. Call from runHwSuite().
 inline void runRelayBankSuite() {
     RUN_TEST(relay_test_boot_lock_delays_first_on);
@@ -349,4 +457,8 @@ inline void runRelayBankSuite() {
     RUN_TEST(relay_test_fill_status_fields);
     RUN_TEST(relay_test_last_on_and_change_bookkeeping);
     RUN_TEST(relay_test_64bit_time_above_2_32_ms_no_wrap);
+    RUN_TEST(relay_test_inhibit_forces_all_off_and_logs);
+    RUN_TEST(relay_test_inhibit_holds_off_against_requests);
+    RUN_TEST(relay_test_uninhibit_safety_immediate_control_waits_lock);
+    RUN_TEST(relay_test_inhibit_idempotent);
 }

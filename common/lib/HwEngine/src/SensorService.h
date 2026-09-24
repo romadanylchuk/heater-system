@@ -45,6 +45,12 @@ public:
     std::optional<float> value(uint8_t logical) const;  // empty unless Ok
     bool missing(uint8_t logical) const;
 
+    // Completed bus-read cycles (D17's request+read pair), counted even when
+    // readCount == 0 (no devices/sensors). Not "healthy sensors" -- it is the
+    // OTA rollback health check's liveness input (stage 04): it only proves the
+    // service keeps cycling, not that any sensor is Ok.
+    uint32_t readCycleCount() const { return _readCycles; }
+
     // Writes CommonState.sensors, .oneWire, and bits 24..31 of .alarms.activeMask
     // (other bits untouched).
     void fillStatus(CommonState& state) const;
@@ -93,4 +99,5 @@ private:
     uint64_t _requestMs = 0;
     uint64_t _lastRequestMs = 0;
     bool _rescanRequested = false;
+    uint32_t _readCycles = 0;
 };
