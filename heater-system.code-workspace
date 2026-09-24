@@ -1,0 +1,22 @@
+{
+	"folders": [
+		{
+			"name": "heater-system (root)",
+			"path": "."
+		},
+		{
+			"path": "boiler-room"
+		},
+		{
+			"path": "home-heating"
+		},
+		{
+			"path": "common"
+		}
+	],
+	"extensions": {
+		"recommendations": [
+			"platformio.platformio-ide"
+		]
+	}
+}

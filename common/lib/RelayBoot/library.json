@@ -1,0 +1,7 @@
+{
+  "name": "RelayBoot",
+  "version": "0.1.0",
+  "description": "Writes the all-OFF byte to the PCF8574 relay expander as the first action after Wire.begin(). Arduino/ESP32 only.",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

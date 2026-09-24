@@ -1,0 +1,7 @@
+{
+  "name": "BoardConfig",
+  "version": "0.1.0",
+  "description": "KC868-A6 board pin/address map and pure relay-mask helpers. Header-only, platform-agnostic (native and ESP32 safe).",
+  "platforms": "*",
+  "frameworks": "*"
+}

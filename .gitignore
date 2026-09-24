@@ -1,0 +1,7 @@
+.pio/
+/boiler-room/data/
+/home-heating/data/
+**/.vscode/*
+!**/.vscode/extensions.json
+__pycache__/
+*.pyc
