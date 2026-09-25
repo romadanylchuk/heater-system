@@ -1,0 +1,7 @@
+{
+  "name": "DisplayEngine",
+  "version": "0.1.0",
+  "description": "Pure OLED display logic: frame model, formatting, pixel shift, tile scheduler, page scheduler, shared pages; native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

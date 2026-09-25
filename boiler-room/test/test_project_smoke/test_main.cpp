@@ -2,6 +2,7 @@
 #include <BoardConfig.h>
 #include <CommonState.h>
 #include <ConfigEngine.h>
+#include <DisplaySettings.h>
 #include <EventLog.h>
 #include <HaDiscovery.h>
 #include <HaEntityRegistry.h>
@@ -239,6 +240,40 @@ static void test_home_no_need_gated_until_mqtt() {
     TEST_ASSERT_TRUE(config.getBool(noNeedIdx));  // persisted value untouched
 }
 
+// Stage 06: the display table is appended LAST (tables[3]) -- its settings
+// resolve with their defaults and clamps, are HA-exposed, and the project's
+// own enum indices did not shift.
+static void test_display_settings_resolve_in_schema() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(BOILER_ROOM_SCHEMA, 0)));
+
+    int rotIdx = config.indexOf(DISPLAY_KEY_ROTATE_S);
+    int brightIdx = config.indexOf(DISPLAY_KEY_BRIGHTNESS);
+    TEST_ASSERT_TRUE(rotIdx >= 0);
+    TEST_ASSERT_TRUE(brightIdx >= 0);
+    TEST_ASSERT_EQUAL_INT32(5, config.getInt(static_cast<size_t>(rotIdx)));
+    TEST_ASSERT_EQUAL_INT32(30, config.getInt(static_cast<size_t>(brightIdx)));
+
+    config.setNumber(static_cast<size_t>(rotIdx), 0, EventReason::Web, 0);
+    TEST_ASSERT_EQUAL_INT32(2, config.getInt(static_cast<size_t>(rotIdx)));
+    config.setNumber(static_cast<size_t>(rotIdx), 500, EventReason::Web, 0);
+    TEST_ASSERT_EQUAL_INT32(60, config.getInt(static_cast<size_t>(rotIdx)));
+
+    const SettingDescriptor* first = config.descriptor(static_cast<size_t>(BoilerRoomSetting::HomeNoNeed));
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_EQUAL_STRING("homeNoNeed", first->key);
+
+    HaEntityRegistry reg;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(reg.build(config, BOILER_ROOM_HW, nullptr, 0)));
+    TEST_ASSERT_TRUE(findHaKey(reg, "disp_rotate_s") >= 0);
+    TEST_ASSERT_TRUE(findHaKey(reg, "disp_bright") >= 0);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_relay_channel_count_is_six);
@@ -251,5 +286,6 @@ int main() {
     RUN_TEST(test_ha_registry_builds_for_project);
     RUN_TEST(test_discovery_payloads_fit);
     RUN_TEST(test_home_no_need_gated_until_mqtt);
+    RUN_TEST(test_display_settings_resolve_in_schema);
     return UNITY_END();
 }

@@ -1,0 +1,7 @@
+{
+  "name": "DisplayEsp32",
+  "version": "0.1.0",
+  "description": "ESP32-only adapter for DisplayEngine: Ssd1306Panel (U8g2 full-buffer SSD1306 over the shared TwoWire with an error-latching byte callback that never changes the 100 kHz bus clock) and the DisplayServices facade both main.cpp files construct (boot splash, DI1 reset countdown screen, chunked tile-row flushing on the loop task, re-probe of a missing panel).",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

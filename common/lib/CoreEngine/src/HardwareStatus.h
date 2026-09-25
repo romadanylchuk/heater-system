@@ -24,6 +24,7 @@ constexpr uint16_t DIAG_CODE_ONEWIRE_OVERFLOW = 2;
 constexpr uint16_t DIAG_CODE_ANTISEIZE_K1_STROKE = 3;  // anti-seize K1 close leg could not start (invalid stroke)
 constexpr uint16_t DIAG_CODE_MQTT_CMD_DROPPED = 4;     // MQTT command dropped: command queue full (stage 04)
 constexpr uint16_t DIAG_CODE_OTA_HEALTH_TIMEOUT = 5;   // OTA rollback health check not confirmed within 300 s (stage 04)
+constexpr uint16_t DIAG_CODE_DISPLAY_MISSING = 6;     // OLED absent / stopped ACKing (stage 06)
 
 enum class RelayReason : uint8_t { None = 0, Boot, Control, Safety, AntiSeize, K1Drive, Inhibit };
 enum class SensorState : uint8_t { Unassigned = 0, Unknown, Ok, Fault };

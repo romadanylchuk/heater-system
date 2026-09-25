@@ -19,7 +19,9 @@ heater-system/
 │   │   ├── HwEngine/           pure, native-testable relay/K1/DS18B20/anti-seize logic (see "Hardware services" below)
 │   │   ├── HwEsp32/            ESP32-only adapters for HwEngine (PCF8574, OneWire/DallasTemperature)
 │   │   ├── NetEngine/          pure, native-testable Wi-Fi/MQTT/HA/OTA logic (see "Connectivity" below)
-│   │   └── NetEsp32/           ESP32-only Wi-Fi/mDNS/MQTT/OTA adapters, web server, ConnectivityServices
+│   │   ├── NetEsp32/           ESP32-only Wi-Fi/mDNS/MQTT/OTA adapters, web server, ConnectivityServices
+│   │   ├── DisplayEngine/      pure, native-testable OLED frame/pages/scheduler (see "OLED display" below)
+│   │   └── DisplayEsp32/       ESP32-only SSD1306 driver (U8g2, 100 kHz) + DisplayServices
 │   ├── web/                    shared web UI sources (style.css, lang/); assembled into <project>/data/
 │   ├── scripts/                PlatformIO pre-scripts (fw_version.py, web_assemble.py)
 │   └── test/                   CommonSuite.h — native tests shared by both projects
@@ -559,6 +561,101 @@ These steps need real boards; none of them has been run yet.
 - [ ] Remove the LittleFS image (flash an empty one): `/` serves the rescue page and can upload the image.
 - [ ] Headers of several KB from a LAN client: the controller survives or recovers by watchdog.
 
+## OLED display (stage 06)
+
+Both controllers drive the on-board SSD1306 128×64 OLED (I²C `0x3C`) as a read-only view of
+`CommonState`. The display never writes AppState and never makes a control decision. The code is
+split the usual way:
+
+- `common/lib/DisplayEngine` is pure and native-tested. It holds the frame model and fonts, text
+  fitting and formatting, the pixel shift, the dirty tile-row scheduler, the screen state machine,
+  the page registry, the shared pages and the special screens.
+- `common/lib/DisplayEsp32` holds `Ssd1306Panel` (a U8g2 full-buffer driver with a custom I²C byte
+  callback) and the `DisplayServices` facade that both `main.cpp` files construct.
+
+### Pages, rotation and pixel shift
+
+- **Rotation order:** controller pages (stages 07/08, in registration order), then **Network**
+  (Wi-Fi state, SSID, RSSI, IP, MQTT), then **Sensors** (status of each logical sensor), then
+  **Alarms**. Alarms is in the rotation only while an alarm is active; it lists 5 labels per
+  sub-page, and sub-pages change every 2.5 s.
+- **Dwell:** each page stays for `dispRotateS` seconds. The Alarms page stays long enough to show
+  all its sub-pages. A changed period applies from the next page change.
+- **Burn-in pixel shift:** the whole picture moves by 1 px on an 8-step ring and never more than
+  2 px. It moves once per rotation period, on its own timer, so it also moves with a single page,
+  during an alarm hold and on the setup/OTA screens.
+- **Fonts:** fixed-width `5x8`, `6x10` and `10x20` (ASCII only). Characters that are not ASCII are
+  shown as `?`, and text that is too long is cut with `~`.
+
+### Alarm jump and special screens
+
+- **Alarm jump:** a **new** alarm bit (including alarms already active at boot) jumps to the Alarms
+  page and holds it for 30 s. Another new bit restarts the 30 s. Clearing bits never jumps. The hold
+  ends after 30 s or when no alarm is left, and rotation then resumes at page 0.
+- **Priority:** reset result (first 3 s after boot) > OTA ("UPDATING") > setup mode > alarm hold >
+  rotation.
+- **Setup mode** (no Wi-Fi saved) shows `SETUP MODE`, the AP name, `(open, no password)` and
+  `Open: 192.168.4.1`. When an alarm is active, every
+  3rd slot shows the Alarms page instead.
+- **DI1 factory reset:** while DI1 is held at boot, the panel shows the countdown (seconds left and a
+  progress bar). "Reset confirmed" or "Reset aborted" then stays for 3 s after the loop starts.
+- **Boot splash:** project name, firmware version and "starting..." from the first moments of
+  `setup()`.
+
+### Settings (group "display", HA-exposed)
+
+| Key | Range | Default | Effect |
+|-----|-------|---------|--------|
+| `dispRotateS` | 2–60 s | 5 | page rotation period and pixel-shift step |
+| `dispBright` | 1–100 % | 30 | SSD1306 contrast 3–255, applied live; the panel is never switched off |
+
+Both settings were appended as the last settings table, so no existing setting index or NVS key
+moved, and the config version stays 1.
+
+### Non-blocking design
+
+- **Loop task only.** All display I²C runs on the loop task, like every other `Wire` user (relay
+  PCF8574, DI1 PCF8574, DS1307). There is no display task and no mutex.
+- **Last in the pass.** `display.fastTick(millis() - start)` is the **last** call of every 100 ms
+  pass, after `hw.fastTick()`, so relay and K1 writes in that pass are never delayed.
+- **Row budget.** The frame is diffed against a 1 KB shadow in 128-byte tile rows. Each pass sends at
+  most 2 changed rows (about 30–32 ms). It sends only 1 row once 40 ms of the pass has been spent, and
+  none once 80 ms has. A full repaint takes ≤ 400 ms; a live-value update usually takes 1–2 rows.
+- **100 kHz bus.** The stock U8g2 I²C driver calls `Wire.setClock(400000)` on every transfer and
+  `Wire.begin()` on init, and never restores the clock. That would move the standard-mode PCF8574s
+  and DS1307 onto a fast-mode bus. `Ssd1306Panel` uses its own byte callback, which never calls
+  `setClock` or `begin`, so the whole bus stays at the 100 kHz `Wire.begin` default. The firmware
+  sources contain no `setClock` call.
+- **Boot order.** `setup()` still starts with `Wire.begin` + `RelayBoot::forceAllOff`. Then come
+  `display.beginEarly(Wire)` (probe, splash, reset-countdown hook), `core.begin(Wire)`,
+  `hw.begin(Wire)`, `web.attach()`, `net.begin()` and `display.begin()`.
+
+### Missing or failing display
+
+- **Absent at boot.** `beginEarly` probes `0x3C` with an address-only write (~0.1 ms). With no ACK,
+  the display draws nothing, the countdown hook does nothing, and boot and control continue
+  unchanged.
+- **Lost at runtime.** After 3 consecutive failed row sends, the display is marked unavailable. A
+  single glitch while a relay switches does not count.
+- **Re-probe.** While unavailable, the panel is re-probed every 30 s. When it answers, it is
+  re-initialised and fully repainted.
+- **Logging.** One serial line per available/unavailable transition, and **one** `DiagnosticWarning`
+  event per boot (source `EVENT_SOURCE_DIAG_BASE + DIAG_CODE_DISPLAY_MISSING` = `0x0506`).
+
+### Page API for stages 07/08
+
+```cpp
+void renderT1Page(const CommonState& s, DisplayFrame& f, void* ctx);  // DisplayPageRenderFn
+display.addPage({"T1", renderT1Page, &ctx});  // in setup(), BEFORE display.begin()
+```
+
+- `addPage` returns false after `begin()` or when the registry (8 pages) is full.
+- Renderers are pure. They fill the `DisplayFrame` with `setTitle`/`addBody`/`addText`/`setBar`,
+  inside the 126×62 content box.
+- To get real alarm labels, pass an `AlarmDescriptor` table **indexed by alarm bit** (entry `i` =
+  bit `i`, `i < 24`) to the `DisplayServices` constructor. Bits 24–31 are always shown as
+  "Sensor <name> missing".
+
 ## Prerequisites
 
 - PlatformIO (VS Code extension `platformio.platformio-ide`, or the `pio` CLI).
@@ -719,3 +816,37 @@ done on hardware:
    must clear the error on the next ~100 ms fast tick (no reboot needed). `state.relays.ioError` /
    `state.relays.ioErrorCount` (surfaced once a UI reads them, stage 05+) are the fields to watch if
    testing via the web API instead of serial.
+
+### OLED display checks (stage 06, hardware only, NOT TESTED)
+
+None of these has been run on a real board yet.
+
+- [ ] **Boot splash.** At power-on the panel shows the project name, `fw <version>` and
+      "starting..." without first flashing random pixels. The serial log shows
+      `[display] pages=2 available=1`.
+- [ ] **DI1 countdown screen.** Hold DI1 closed and power-cycle. "FACTORY RESET / DI1 held" appears
+      and the big seconds number and the bar count down once per second, in step with the
+      `[factory-reset] DI1 held, N s left` lines. Release it early: "Reset aborted" stays for about
+      3 s after boot. Hold it to 0: "Reset confirmed". In both cases the relays stay OFF throughout.
+- [ ] **Display timing.** Flash the `debug` env. Every 60 s the serial log prints
+      `[display] max tick <us> us`. It must stay well under 60 000 µs (two rows are about 30–32 ms), and
+      relay/K1 behaviour must be unchanged while pages rotate.
+- [ ] **Missing display.** Unplug the OLED (or boot without it). Boot and control continue with no
+      delay. The Log page shows exactly **one** "Diagnostic warning" event for this boot, and the
+      serial log has one `[display] ... not responding` / `not found` line, not a flood. Plug it back
+      in: within about 30 s the log shows `[display] recovered` and the panel repaints.
+- [ ] **Brightness.** The panel is readable at the 30 % default `dispBright`. Changing `dispBright`
+      in the web Settings (Display tab) or from HA changes the contrast within a second.
+- [ ] **Bus clock.** With a logic analyser on SDA/SCL, all traffic (relay PCF8574, DI1, DS1307,
+      OLED) runs at ≈100 kHz. The display must never switch the bus to 400 kHz.
+- [ ] **Alarm jump.** Unplug an assigned DS18B20. The Alarms page appears with
+      "Sensor <name> missing", holds for 30 s, then rotation resumes at the first page.
+- [ ] **Single-row updates.** The panel runs in horizontal addressing mode and only changed tile rows
+      are sent. Watch the Network and Sensors pages for several minutes while pages rotate and after
+      a pixel-shift step: live values (RSSI, sensor status) must update in place, with no shifted
+      rows, stale fragments or garbage pixels.
+- [ ] **Setup-mode screen.** Clear the saved Wi-Fi (or boot a fresh board). The panel shows
+      `SETUP MODE`, the AP SSID, `(open, no password)` and `Open: 192.168.4.1`, readable and not
+      clipped. With an alarm active, every 3rd slot shows the Alarms page.
+- [ ] **OTA screen.** Start a web upload and an espota update. The panel switches to "UPDATING" with
+      the OTA source for the whole update, including while an alarm hold is active.

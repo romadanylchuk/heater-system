@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <CommonSettings.h>
 #include <ConfigSchema.h>
+#include <DisplaySettings.h>
 #include <HwSettings.h>
 #include <SettingDescriptor.h>
 
@@ -40,7 +41,9 @@ inline constexpr SettingDescriptor HOME_HEATING_SETTINGS[] = {
     boolSetting("asEnK1", "asEnK1", "Anti-seize K1", "Антизаклинювання K1", "antiSeize", true),
 };
 
+// The display table (stage 06) is appended LAST so project enum indices never
+// shift; purely additive, config version unchanged, no migration.
 inline constexpr SettingsTable HOME_HEATING_TABLES[] = {
-    COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE, makeTable(HOME_HEATING_SETTINGS)};
+    COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE, makeTable(HOME_HEATING_SETTINGS), DISPLAY_SETTINGS_TABLE};
 inline constexpr ConfigSchema HOME_HEATING_SCHEMA = {
-    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 3, nullptr, 0};
+    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 4, nullptr, 0};

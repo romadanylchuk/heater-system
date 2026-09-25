@@ -3,6 +3,7 @@
 #include <RelayMask.h>
 #include "BackupSuite.h"
 #include "ConfigEngineSuite.h"
+#include "DisplaySuite.h"
 #include "EventLogSuite.h"
 #include "HwSuite.h"
 #include "NetSuite.h"
@@ -40,4 +41,5 @@ inline void runCommonSuite() {
     runHwSuite();
     runNetSuite();
     runWebSuite();
+    runDisplaySuite();
 }

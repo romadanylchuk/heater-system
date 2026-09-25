@@ -6,6 +6,7 @@
 #include <HardwareServices.h>
 #include <ConnectivityServices.h>
 #include <WebServices.h>
+#include <DisplayServices.h>
 #include "BoilerRoomHardware.h"
 #include "BoilerRoomNet.h"
 #include "BoilerRoomSchema.h"
@@ -25,6 +26,9 @@ static ConnectivityServices net(state, core, hw, BOILER_ROOM_NET, BOILER_ROOM_HW
 // Stage 05: session-gated SPA/API, JSON snapshots, captive DNS. Handlers never
 // touch CommonState; writes only through the command queue.
 static WebServices web(state, core, net, BOILER_ROOM_SCHEMA, BOILER_ROOM_HW);
+// Stage 06: SSD1306 OLED. All display I2C runs on the loop task, last in each
+// fast pass (<= 2 tile rows), at the unchanged 100 kHz bus clock. Read-only view.
+static DisplayServices display(state, core, BOILER_ROOM_HW, PROJECT_NAME);
 
 void setup() {
     // SAFETY: must remain the first statements of setup()
@@ -38,10 +42,12 @@ void setup() {
                        PCF8574_RELAY_ADDR);
     }
 
+    display.beginEarly(Wire);  // after SAFETY relay-off: shows DI1 reset countdown
     core.begin(Wire);
     hw.begin(Wire);
     web.attach();  // before net.begin(): injects the gate + route installer
     net.begin();  // after core + hardware: relays are already driven by HwRuntime
+    display.begin();
 }
 
 void loop() {
@@ -61,6 +67,7 @@ void loop() {
     net.fastTick();
     web.fastTick();
     hw.fastTick();
+    display.fastTick(millis() - start);  // last: never delays relay/K1 writes
     const uint32_t spent = millis() - start;
     delay(spent < HW_FAST_TICK_MS ? HW_FAST_TICK_MS - spent : 1);
 }

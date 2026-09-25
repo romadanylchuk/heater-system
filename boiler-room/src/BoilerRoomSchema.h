@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <CommonSettings.h>
 #include <ConfigSchema.h>
+#include <DisplaySettings.h>
 #include <HwSettings.h>
 #include <SettingDescriptor.h>
 
@@ -43,7 +44,9 @@ inline constexpr SettingDescriptor BOILER_ROOM_SETTINGS[] = {
     boolSetting("asEnP3", "asEnP3", "Anti-seize P3", "Антизаклинювання P3", "antiSeize", true),
 };
 
+// The display table (stage 06) is appended LAST so project enum indices never
+// shift; purely additive, config version unchanged, no migration.
 inline constexpr SettingsTable BOILER_ROOM_TABLES[] = {
-    COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE, makeTable(BOILER_ROOM_SETTINGS)};
+    COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE, makeTable(BOILER_ROOM_SETTINGS), DISPLAY_SETTINGS_TABLE};
 inline constexpr ConfigSchema BOILER_ROOM_SCHEMA = {
-    "boiler-room", BOILER_ROOM_CONFIG_VERSION, BOILER_ROOM_TABLES, 3, nullptr, 0};
+    "boiler-room", BOILER_ROOM_CONFIG_VERSION, BOILER_ROOM_TABLES, 4, nullptr, 0};
