@@ -30,8 +30,12 @@
 // AdminAuth's locked copy, the JsonSnapshot mutexes and the queue. Nothing
 // here blocks the loop task except espota's own upload inside handle().
 //
-// Stage-05 extension points: server() (add routes/middleware on the same
-// AsyncWebServer) and adminAuth() (the same admin credential check).
+// Stage-05 hook: setWebLayer() (before begin()) injects the RequestGate
+// (session + CSRF + OTA grant; null fails closed: every non-Public route
+// answers 401) and the two-phase route installer that WebServerHost::begin
+// calls at the Early (body guards) and Late (SPA/API routes) points of its
+// registration order. adminAuth() is the only credential source (login,
+// OTA re-entry, espota); its epoch() invalidates sessions on any change.
 class ConnectivityServices {
 public:
     ConnectivityServices(CommonState& state, CoreServices& core, HardwareServices& hw, const NetIdentity& id,
@@ -41,8 +45,23 @@ public:
     void tick();      // ~1 s, after hw.tick()
     void fastTick();  // ~100 ms, BEFORE hw.fastTick()
 
+    // Must be called before begin(); the pointers must outlive this object.
+    void setWebLayer(const RequestGate* gate, WebRouteInstaller installer, void* ctx) {
+        _gate = gate;
+        _installer = installer;
+        _installerCtx = ctx;
+    }
+
     AsyncWebServer& server() { return _web.server(); }
     AdminAuth& adminAuth() { return _adminAuth; }
+    // Any task: NetSignals::webOtaStarts (monotonic web OTA start count).
+    uint32_t webOtaStarts() const { return _signals.webOtaStarts.load(); }
+    // Any task: NetSignals::otaWebFsStarted (a filesystem-mode web OTA has
+    // started since boot; sticky).
+    bool webOtaFsStarted() const { return _signals.otaWebFsStarted.load(); }
+    // Any task: NetSignals::espotaActive (true while an espota transfer runs;
+    // the loop task is blocked in handle() for its whole duration).
+    bool espotaActive() const { return _signals.espotaActive.load(); }
     ConnectivityRuntime& runtime() { return _runtime; }
 
 private:
@@ -80,6 +99,10 @@ private:
     WifiCredsMailbox _wifiCreds;  // POST /api/wifi -> tick(): SSID+password applied together
     WebServerHost _web;
     EspotaService _espota;
+
+    const RequestGate* _gate = nullptr;
+    WebRouteInstaller _installer = nullptr;
+    void* _installerCtx = nullptr;
 
     char _webVersion[VERSION_TEXT_LEN + 1] = {};
     char _clientId[CLIENT_ID_MAX + 1] = {};

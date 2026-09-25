@@ -1,0 +1,7 @@
+{
+  "name": "WebEngine",
+  "version": "0.1.0",
+  "description": "pure web/session/auth logic, native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

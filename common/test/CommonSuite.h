@@ -8,6 +8,7 @@
 #include "NetSuite.h"
 #include "RuntimeSuite.h"
 #include "TimeSuite.h"
+#include "WebSuite.h"
 
 // Shared native-safe Unity tests for RelayMask and CoreEngine. Header-only so both
 // project test wrappers (test/test_common/test_main.cpp) can include and run it.
@@ -38,4 +39,5 @@ inline void runCommonSuite() {
     runTimeSuite();
     runHwSuite();
     runNetSuite();
+    runWebSuite();
 }

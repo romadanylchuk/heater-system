@@ -27,4 +27,16 @@ struct NetSignals {
     // server's /ota/* guard on the AsyncTCP task to answer 409 instead of
     // letting ElegantOTA touch Update concurrently (review-9 Must-fix 1c).
     std::atomic<bool> espotaActive{false};
+    // Web (ElegantOTA) OTA starts, monotonic; bumped in onStart on the
+    // AsyncTCP task, so the web layer can stop LittleFS static serving the
+    // moment a (filesystem) OTA starts, before the loop task has mirrored it
+    // into state.ota.inProgress (stage-05 review-4 Should-fix 1).
+    std::atomic<uint32_t> webOtaStarts{0};
+    // Web OTA mode (review-5 suggestion): otaWebFsPending is the mode of the
+    // admitted /ota/start request about to run (set by the /ota/* middleware
+    // on the AsyncTCP task); onStart copies it into otaWebFsStarted, which is
+    // sticky until reboot: a filesystem-mode web OTA has started, so the
+    // LittleFS partition may be half-rewritten.
+    std::atomic<bool> otaWebFsPending{false};
+    std::atomic<bool> otaWebFsStarted{false};
 };

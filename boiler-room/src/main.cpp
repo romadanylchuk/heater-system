@@ -5,6 +5,7 @@
 #include <CoreServices.h>
 #include <HardwareServices.h>
 #include <ConnectivityServices.h>
+#include <WebServices.h>
 #include "BoilerRoomHardware.h"
 #include "BoilerRoomNet.h"
 #include "BoilerRoomSchema.h"
@@ -21,6 +22,9 @@ static HardwareServices hw(state, core, BOILER_ROOM_HW);
 // Stage 04: Wi-Fi/setup AP, mDNS, MQTT + HA discovery, web OTA/espota,
 // rollback health. Control never depends on it (it only posts commands).
 static ConnectivityServices net(state, core, hw, BOILER_ROOM_NET, BOILER_ROOM_HW);
+// Stage 05: session-gated SPA/API, JSON snapshots, captive DNS. Handlers never
+// touch CommonState; writes only through the command queue.
+static WebServices web(state, core, net, BOILER_ROOM_SCHEMA, BOILER_ROOM_HW);
 
 void setup() {
     // SAFETY: must remain the first statements of setup()
@@ -36,6 +40,7 @@ void setup() {
 
     core.begin(Wire);
     hw.begin(Wire);
+    web.attach();  // before net.begin(): injects the gate + route installer
     net.begin();  // after core + hardware: relays are already driven by HwRuntime
 }
 
@@ -49,10 +54,12 @@ void loop() {
         core.tick();
         hw.tick();
         net.tick();
+        web.tick();
     }
     // net.fastTick() first: it drains OTA start/end signals and applies the
     // relay inhibit before hw.fastTick() writes the relay port.
     net.fastTick();
+    web.fastTick();
     hw.fastTick();
     const uint32_t spent = millis() - start;
     delay(spent < HW_FAST_TICK_MS ? HW_FAST_TICK_MS - spent : 1);

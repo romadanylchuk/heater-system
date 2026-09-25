@@ -1,5 +1,4 @@
 #include "AdminAuth.h"
-#include <ESPAsyncWebServer.h>
 #include <string.h>
 
 namespace {
@@ -13,36 +12,60 @@ void copyTrunc(char* out, size_t cap, const char* in) {
 }  // namespace
 
 void AdminAuth::set(const char* user, const char* pass) {
+    // Truncated local copies first, so the critical section only does two
+    // bounded copies and the epoch bump (review-3 Should-fix 2: the bump is
+    // now inside the lock, atomic with the new pair).
     char u[USER_MAX + 1];
     char p[PASS_MAX + 1];
     copyTrunc(u, sizeof(u), user);
     copyTrunc(p, sizeof(p), pass);
     portENTER_CRITICAL(&_mux);
-    memcpy(_user, u, sizeof(_user));
-    memcpy(_pass, p, sizeof(_pass));
+    _creds.assign(u, p);
+    portEXIT_CRITICAL(&_mux);
+    secureWipe(u, sizeof(u));
+    secureWipe(p, sizeof(p));
+}
+
+void AdminAuth::copyLocked(AdminCredentials& out) const {
+    portENTER_CRITICAL(&_mux);
+    out = _creds;
     portEXIT_CRITICAL(&_mux);
 }
 
-bool AdminAuth::check(AsyncWebServerRequest* r) const {
-    if (r == nullptr) {
+uint32_t AdminAuth::epoch() const {
+    portENTER_CRITICAL(&_mux);
+    uint32_t e = _creds.epoch();
+    portEXIT_CRITICAL(&_mux);
+    return e;
+}
+
+bool AdminAuth::verify(const char* user, size_t userLen, const char* pass, size_t passLen,
+    uint32_t* epochOut) const {
+    if (user == nullptr || pass == nullptr) {
         return false;
     }
-    char u[USER_MAX + 1];
-    char p[PASS_MAX + 1];
-    portENTER_CRITICAL(&_mux);
-    memcpy(u, _user, sizeof(u));
-    memcpy(p, _pass, sizeof(p));
-    portEXIT_CRITICAL(&_mux);
-    if (u[0] == '\0' || p[0] == '\0') {
-        return false;  // fail closed: never accept an empty credential pair
+    AdminCredentials copy;
+    copyLocked(copy);
+    uint32_t e = 0;
+    bool ok = copy.verify(user, userLen, pass, passLen, e);
+    copy.wipe();
+    if (ok && epochOut != nullptr) {
+        *epochOut = e;
     }
-    bool ok = r->authenticate(u, p);
-    memset(p, 0, sizeof(p));
     return ok;
 }
 
-void AdminAuth::challenge(AsyncWebServerRequest* r) const {
-    if (r != nullptr) {
-        r->requestAuthentication();
+bool AdminAuth::verifyPassword(const char* pass, size_t passLen, uint32_t* epochOut) const {
+    if (pass == nullptr) {
+        return false;
     }
+    AdminCredentials copy;
+    copyLocked(copy);
+    uint32_t e = 0;
+    bool ok = copy.verifyPassword(pass, passLen, e);
+    copy.wipe();
+    if (ok && epochOut != nullptr) {
+        *epochOut = e;
+    }
+    return ok;
 }

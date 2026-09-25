@@ -405,6 +405,160 @@ TESTED** until done on hardware.
    After that aborted upload, a new web upload (and an espota upload) works without a reboot. An
    empty `/ota/upload` after `/ota/start` logs `OtaUpdate(2)` and does not reboot.
 
+## Web UI (stage 05)
+
+Stage 05 adds the admin web UI (a small single-page app) to both controllers. It **replaces the
+stage-04 digest login**: every route in "Admin login on every endpoint" above is now protected by the
+session login described here, and `GET /` serves the SPA.
+
+### URLs
+
+| URL | What |
+|---|---|
+| `http://boiler-room.local/`, `http://home-heating.local/` (or the IP) | the SPA (from LittleFS) |
+| `http://192.168.4.1/` while the setup AP (`BoilerRoom-Setup` / `HomeHeating-Setup`) is up | the SPA, which opens `#setup` after login; without a web image, the rescue page |
+| `/setup`, `/update` | the built-in **rescue page** (PROGMEM, always present) |
+
+SPA pages: `#status`, `#settings`, `#sensors`, `#log`, `#network`, `#system` and `#setup`. The
+language (English / Ukrainian) switch is in the header and is remembered by the browser.
+
+**Live header and polling.** The header (controller name, time, Wi-Fi/MQTT, alarm banner and the
+amber warning chips, including the firmware/web version-mismatch chip) is shown on every page, so
+the SPA polls `GET /api/state` every 2 s on **every** page, not only on Status (a deliberate
+choice: alarms stay visible wherever you are). Polling stops while the browser tab is hidden and
+resumes when it is shown again. Page-specific polls (the Sensors table, the Network page's Wi-Fi
+status) run only while that page is open; the log and settings load when their page opens.
+
+### Login, session, CSRF and the OTA grant
+
+- **Login:** `POST /api/login` (`user`, `pass`) with the `webUser`/`webPass` settings (default
+  `admin`/`admin`: change it). A success sets the cookie `hsid` (`HttpOnly; SameSite=Strict;
+  Max-Age=86400`) and returns a CSRF token.
+- **Sessions:** at most 4 are kept in RAM, and the oldest is dropped when a 5th login happens. Each
+  one lasts a **fixed 24 h** from login (not extended by activity, and immune to NTP clock jumps). A
+  reboot ends all sessions.
+- **CSRF:** every POST, and every `/ota/*` request, must send `X-CSRF-Token`. A page reload gets the
+  token back from `GET /api/session`. A bad token gives 403 `csrf`, and the SPA refreshes it once.
+- **Changing the login or password** (System → Web access, a backup import that changes them, or a
+  factory reset) **ends every session**, including your own; sign in again with the new values.
+- **Brute-force throttle:** 5 consecutive failures (login or OTA password) lock both for 30 s
+  (429 with `retryS`). The throttle is **global**, not per client.
+- **OTA grant:** a web update needs the password again. `POST /api/ota/grant` (`pass`) gives the
+  session a 120 s grant. `GET /ota/start?mode=fr|fs` and `POST /ota/upload` need session + CSRF +
+  grant, checked before any body byte is written to flash. An espota session gives 409. Logout
+  clears the grant.
+- **Logout:** `POST /api/logout` ends the session on the controller and clears the cookie.
+
+### System page
+
+- **Clock:** local time (or "time not set"), time source, RTC state and last NTP sync. The time zone
+  and NTP server are edited below it.
+- **Device:** uptime and the last restart reason (from the newest `reboot` log event; "unknown" when
+  the log no longer holds it).
+- **Versions:** firmware and web versions from `GET /api/version`; a warning when they differ, when
+  the web version is missing, or when the last update was rolled back.
+- **Web access:** the `webUser`/`webPass` fields. A blank password field means "unchanged". Change
+  one of them per save (a save that changes both is refused): save the password, sign in with it,
+  then change the login. The sign-in page then states which credential is new and which is
+  unchanged.
+- **Update:** choose *Firmware* (`.pio/build/release/firmware.bin`) or *Filesystem image*
+  (`.pio/build/release/littlefs.bin` from `-t buildfs`), enter the password again, and watch the
+  progress bar. **All relays switch OFF during the update.** After success the page waits for the
+  controller to come back and reloads (sign in again: sessions do not survive the reboot).
+- **Backup:** *Download backup* warns that **the file contains passwords in plain text** and saves
+  `<project>-backup-YYYYMMDD.json`. *Restore from file* refuses files over 8192 bytes before
+  uploading, and the controller also refuses a backup of the other project ("file is from …").
+- **Factory reset:** type `RESET` to confirm. The controller erases all settings, restarts and opens
+  its setup AP (`BoilerRoom-Setup` / `HomeHeating-Setup`, `http://192.168.4.1/`).
+
+### API routes
+
+Access: **P** public, **R** session, **W** session + CSRF, **O** session + CSRF + OTA grant.
+Write routes answer 202 `{"ok":true,"id":N}`; poll `GET /api/cmd?id=N` for the result.
+
+| Route | Access | Purpose |
+|---|---|---|
+| `POST /api/login` | P | `user`, `pass`: 200 `{csrf}`, 401, 429 |
+| `POST /api/logout` | W | end the session |
+| `GET /api/session` | R | current CSRF token |
+| `GET /api/version` | P | `project`, `fw`, `web`, `mismatch`, OTA state |
+| `GET /api/state`, `/api/sensors`, `/api/config`, `/api/schema`, `/api/log` | R | snapshots (secrets never included) |
+| `GET /api/cmd?id=N` | R | command result |
+| `POST /api/config` | W | one `key`, `value` per request (Wi-Fi keys refused) |
+| `POST /api/sensors/assign`, `/clear`, `/rescan` | W | sensor mapping |
+| `GET /api/wifi/status`, `GET /api/wifi/scan` | R | Wi-Fi state, last scan |
+| `POST /api/wifi/scan`, `POST /api/wifi` | W | start a scan; save `ssid` + `pass` together |
+| `POST /api/backup/export`, then `GET /api/backup/export` | W / R | 202 while pending, then the file once |
+| `POST /api/backup/import` | W | raw `application/json` body, at most 8192 B (413 above) |
+| `POST /api/factory-reset` | W | form `confirm=RESET` |
+| `POST /api/ota/grant` | W | `pass`: 200 `{ttlS}`, 401, 429 |
+| `GET /ota/start?mode=fr\|fs`, `POST /ota/upload` | O | ElegantOTA backend (409 during espota) |
+| `GET /setup`, `GET /update` | P | rescue page |
+
+Form bodies above 1024 B get 413 before they are parsed.
+
+### Web image: `uploadfs` and the size budget
+
+```sh
+pio run -d boiler-room -e release -t uploadfs     # or -t buildfs, then upload littlefs.bin from System
+pio run -d home-heating -e release -t uploadfs
+```
+
+`web_assemble.py` gzips `common/web` + `<project>/web`, checks that `lang/en.json` and `lang/uk.json`
+have the same keys, and fails the build if the gzipped total exceeds 64 KiB or the 4 KiB-block total
+exceeds 100 KiB (of the 128 KiB LittleFS partition). At the end of stage 05 the gzipped total is
+about 42 KB gzipped (42,353 B for boiler-room, 42,363 B for home-heating) and 68 KiB
+(69,632 B) of 4 KiB blocks for each project. Upload the filesystem image together with the
+firmware of the same version, or the UI shows the version-mismatch warning.
+
+### Rescue page and captive portal
+
+- The **rescue page** is built into the firmware (no LittleFS needed). It offers login, Wi-Fi setup
+  (scan, manual SSID, save) and firmware/filesystem upload with password re-entry. It is served at
+  `/setup`, `/update`, at `/` when the web image is missing, and at `/` during a filesystem update.
+- **Captive portal:** while the setup AP is active, a DNS server answers every name with
+  `192.168.4.1`, and unknown URLs redirect there, so phones open the login page on their own. It
+  never runs in normal (station) mode.
+
+### Known limitations
+
+- HTTP only (no TLS). Use it on a trusted network.
+- The SPA sends no MD5 digest with web OTA uploads (the ESP-IDF image check still validates
+  firmware images).
+- The MQTT password cannot be cleared to empty from the UI (a blank secret means "unchanged").
+- Sessions have a fixed 24 h lifetime and are lost on reboot; the login throttle is global, so a
+  stranger's failed attempts can delay your login by 30 s.
+- ESPAsyncWebServer buffers request **headers** without a size limit before any route or guard
+  runs. Only bodies are capped (1024 B for forms, 8192 B for backups). A client on the LAN could
+  exhaust the heap with huge headers and crash or restart the controller.
+- The login and the password are changed one at a time: the System page refuses a save that
+  changes both. Save the password first, sign in with it, then change the login. After each save the
+  sign-in page says which credential is new (the one just typed) and that the other is unchanged.
+- Only one admin account; there are no roles or API tokens.
+
+### Web UI bring-up checklist (hardware only, NOT TESTED)
+
+These steps need real boards; none of them has been run yet.
+
+- [ ] `uploadfs` both projects; `http://<project>.local/` shows the login page; no mismatch warning.
+- [ ] Login with the default password, change it on System → Web access; every open tab returns to
+      the login page; the new password works; espota uses the new password.
+- [ ] 5 wrong passwords give "try again in 30 s"; a correct one works after 30 s.
+- [ ] Status, Log and Sensors refresh live; assign, move and clear a DS18B20 from Sensors.
+- [ ] Settings: change a number out of range and see "clamped to X"; the value persists over a reboot.
+- [ ] Network: scan, pick a network, save; the controller reconnects; MQTT status is shown.
+- [ ] Setup AP: with no Wi-Fi, the phone opens the captive page at `192.168.4.1`; `#setup` saves Wi-Fi.
+- [ ] Web OTA firmware: wrong password refused; progress bar; relays OFF during the upload; the page
+      reloads after the reboot; the trial boot is confirmed after about 60 s.
+- [ ] Web OTA filesystem: `/` shows the rescue page during the upload; the SPA returns afterwards.
+- [ ] Start espota, then a web OTA: the web upload gets "another update in progress" (409).
+- [ ] Backup: download (file name with the date, plain-text warning shown), import it back, import a
+      file of the other project (refused, "belongs to another controller"), and a 9 KB file (refused
+      in the browser).
+- [ ] Factory reset with `RESET`: the controller restarts into `BoilerRoom-Setup` / `HomeHeating-Setup`.
+- [ ] Remove the LittleFS image (flash an empty one): `/` serves the rescue page and can upload the image.
+- [ ] Headers of several KB from a LAN client: the controller survives or recovers by watchdog.
+
 ## Prerequisites
 
 - PlatformIO (VS Code extension `platformio.platformio-ide`, or the `pio` CLI).

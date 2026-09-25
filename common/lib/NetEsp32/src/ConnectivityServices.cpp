@@ -92,7 +92,7 @@ void ConnectivityServices::begin() {
     _mqtt.begin(&_runtime.registry(), _id.prefix, _core.commands(), _signals);
     applyAdminCreds();
     refreshSnapshots();
-    _web.begin(_adminAuth, _statusJson, _scanJson, _versionJson, _signals, _wifiCreds);
+    _web.begin(_adminAuth, _statusJson, _scanJson, _versionJson, _signals, _wifiCreds, _gate, _installer, _installerCtx);
     _core.setEventPublishHook(&ConnectivityRuntime::eventHook, &_runtime);
 }
 
@@ -115,7 +115,6 @@ void ConnectivityServices::tick() {
         applyAdminCreds();
         _espota.restart(webPass());  // loop task: cannot overlap a session (D16)
     }
-    _web.setSetupApActive(_state.network.setupApActive);
     refreshSnapshots();
 }
 

@@ -17,6 +17,12 @@ using FactoryResetHook = void (*)(EventReason origin, void* ctx);
 // (apply() still does that for every type). Stage 03 (D22).
 using CommandExtensionHandler = CommandStatus (*)(Command& cmd, uint64_t monoMs, void* ctx);
 
+// Called at the end of apply() for every command (loop task), after the
+// lastCommandId/Status update and after the payload was freed
+// (cmd.payload == nullptr inside the hook). Stage 05 (D7): feeds the web
+// CommandResultBoard. Must not post commands or block.
+using CommandResultHook = void (*)(const Command& cmd, CommandStatus status, void* ctx);
+
 class CoreRuntime {
 public:
     static constexpr size_t MAX_COMMANDS_PER_TICK = 16;
@@ -50,6 +56,12 @@ public:
         _extCtx = ctx;
     }
 
+    // Registers the per-command result observer (D7). nullptr disables it.
+    void setResultHook(CommandResultHook hook, void* ctx) {
+        _resultHook = hook;
+        _resultHookCtx = ctx;
+    }
+
 private:
     CommonState& _state;
     ConfigEngine& _config;
@@ -61,4 +73,7 @@ private:
 
     CommandExtensionHandler _extHandler = nullptr;
     void* _extCtx = nullptr;
+
+    CommandResultHook _resultHook = nullptr;
+    void* _resultHookCtx = nullptr;
 };

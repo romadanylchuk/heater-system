@@ -1,4 +1,4 @@
-/* Boiler Controller Web UI */
+/* Heating controller web UI (shared by boiler-room and home-heating) */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;font-size:14px}
 
@@ -149,3 +149,83 @@ main{padding:20px;max-width:1000px;margin:0 auto}
 .token-box{background:#0f1117;border:1px solid #2d3250;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:11px;color:#94a3b8;word-break:break-all;margin-top:4px}
 .info-text{font-size:11px;color:#475569;margin-top:6px}
 .refresh-hint{font-size:11px;color:#2d3250;margin-top:12px;text-align:right}
+
+/* ---- Stage 05 shared components ---- */
+[hidden]{display:none!important}
+.muted{color:#64748b}
+nav{flex-wrap:wrap;height:auto;min-height:52px;padding:6px 16px}
+.nav-lang{display:flex;gap:2px;margin-right:8px}
+.nav-lang button{background:none;border:1px solid #2d3250;color:#64748b;padding:3px 8px;font-size:12px;cursor:pointer}
+.nav-lang button:first-child{border-radius:6px 0 0 6px}
+.nav-lang button:last-child{border-radius:0 6px 6px 0}
+.nav-lang button.active{background:#2d3250;color:#e2e8f0}
+.banner-wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+.banner-wrap:empty{display:none}
+.banner-wrap:not(:empty){padding-top:16px}
+.banner-wrap .alarm-banner{margin-bottom:8px}
+
+/* Connection lost */
+.conn-lost{position:sticky;top:0;z-index:20;background:#78350f;color:#fde68a;text-align:center;font-size:13px;padding:6px 12px}
+
+/* Warning banner + chips */
+.warn-banner{background:#78350f30;border:1px solid #f59e0b50;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600;background:#1e2235;color:#94a3b8;border:1px solid #2d3250;white-space:nowrap}
+.chip-ok{background:#14532d30;color:#86efac;border-color:#22c55e40}
+.chip-amber{background:#78350f40;color:#fcd34d;border-color:#f59e0b50}
+.chip-red{background:#7f1d1d40;color:#fca5a5;border-color:#ef444450}
+
+/* Mode badge */
+.mode-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;background:#1e2235;color:#94a3b8}
+.mode-badge.off{background:#1e2235;color:#64748b}
+.mode-badge.on,.mode-badge.ok{background:#14532d40;color:#22c55e}
+.mode-badge.heat{background:#7c2d1240;color:#f97316}
+.mode-badge.cool,.mode-badge.frost{background:#1e3a5f40;color:#60a5fa}
+.mode-badge.warn{background:#78350f40;color:#fcd34d}
+.mode-badge.alarm{background:#7f1d1d50;color:#fca5a5}
+
+/* K1 position bar */
+.k1-bar{margin:6px 0}
+.k1-bar .k1-label{display:flex;justify-content:space-between;font-size:12px;color:#94a3b8;margin-bottom:4px}
+.k1-bar .k1-track{height:10px;background:#0f1117;border:1px solid #2d3250;border-radius:6px;overflow:hidden}
+.k1-bar .k1-fill{height:100%;background:linear-gradient(90deg,#60a5fa,#f97316);transition:width .4s}
+
+/* Accumulator (stacked temperature layers, top first) */
+.accu{display:flex;flex-direction:column;width:100%;max-width:220px;border:2px solid #2d3250;border-radius:16px;overflow:hidden;margin:0 auto}
+.accu-layer{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;font-size:13px;color:#fff;text-shadow:0 1px 2px #0008;min-height:40px}
+.accu-layer .accu-t{font-weight:700;font-size:15px}
+.accu-layer.na{background:#1e2235!important;color:#475569;text-shadow:none}
+
+/* Sensor table */
+.sensor-table{width:100%;border-collapse:collapse;font-size:13px}
+.sensor-table th{text-align:left;padding:7px 10px;border-bottom:1px solid #2d3250;color:#64748b;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.sensor-table td{padding:7px 10px;border-bottom:1px solid #1e2235;vertical-align:middle}
+.sensor-table td.addr{font-family:monospace;font-size:12px;color:#94a3b8}
+.sensor-table select{padding:5px 8px;background:#0f1117;border:1px solid #2d3250;border-radius:6px;color:#e2e8f0;font-size:12px}
+.sensor-table .btn{padding:5px 12px;font-size:12px}
+.badge-new,.badge-missing{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}
+.badge-new{background:#1e3a5f60;color:#60a5fa}
+.badge-missing{background:#7f1d1d50;color:#fca5a5}
+
+/* Widget slot placeholder (project.js) */
+.slot{border:1px dashed #2d3250;border-radius:12px;padding:16px;margin-bottom:16px;min-height:60px}
+
+/* Field hints / status */
+.form-group .unit{font-size:11px;color:#64748b;margin-left:4px}
+.form-group .hint{font-size:11px;color:#475569;margin-top:3px}
+.form-group .field-status{font-size:11px;margin-top:3px}
+.form-group .field-status.ok{color:#86efac}
+.form-group .field-status.warn{color:#fcd34d}
+.form-group .field-status.err{color:#fca5a5}
+.form-group input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
+
+/* Modal */
+.modal{position:fixed;inset:0;z-index:30;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:#1a1d2e;border:1px solid #2d3250;border-radius:14px;padding:20px;width:100%;max-width:440px}
+.modal-box h3{font-size:16px;margin-bottom:10px}
+.modal-box .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+
+/* Progress */
+.progress{height:8px;background:#0f1117;border:1px solid #2d3250;border-radius:5px;overflow:hidden;margin:8px 0}
+.progress .progress-fill{height:100%;background:#f97316;transition:width .2s}
+
+@media(max-width:500px){main{padding:12px}.banner-wrap{padding:0 12px}.auth-card{padding:22px}}

@@ -1,0 +1,7 @@
+{
+  "name": "WebEsp32",
+  "version": "0.1.0",
+  "description": "ESP32-only stage-05 web layer over WebEngine: SessionGate (session/CSRF/OTA-grant RequestGate), SharedJsonBuffer (mutex-guarded JSON snapshots), WebServices (SPA/API routes, LittleFS static serving, PROGMEM fallback, snapshot rebuilds, command results) and CaptivePortal (DNS while the setup AP is active).",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

@@ -72,6 +72,9 @@ CommandStatus CoreRuntime::apply(Command& cmd, uint64_t monoMs) {
 
     _state.system.lastCommandId = cmd.id;
     _state.system.lastCommandStatus = static_cast<uint8_t>(status);
+    if (_resultHook != nullptr) {
+        _resultHook(cmd, status, _resultHookCtx);
+    }
     return status;
 }
 
