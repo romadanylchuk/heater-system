@@ -9,6 +9,12 @@ K1Command toCommand(const K1Move& m) {
     return K1Command{true, m.dir, m.ms};
 }
 
+// Sets the command and, only when it is actually issued, its kind (C13).
+void setCmd(K1Decision& d, const K1Command& cmd, K1CmdKind kind) {
+    d.cmd = cmd;
+    d.cmdKind = cmd.issue ? kind : K1CmdKind::None;
+}
+
 K1Mode selectMode(const K1Inputs& in) {
     if (!in.heatingEnabled) return K1Mode::Closed;
     if (in.fail == FailMode::Multi) return K1Mode::FailPosFixed;
@@ -42,10 +48,11 @@ void K1Logic::reset() {
     _prevP4Requested = false;
     _prevHeating = false;
     _prevInhibited = false;
+    _prevHold = false;
 }
 
 K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uint64_t nowMs) {
-    K1Decision d = {NO_COMMAND, K1Mode::Unknown, false, 0.0f, false, false, false, 0.0f};
+    K1Decision d = {NO_COMMAND, K1Mode::Unknown, false, 0.0f, false, false, false, 0.0f, K1CmdKind::None};
     const uint32_t recalMs = k1RecalMs(g);
 
     // 1. Motion.
@@ -67,7 +74,7 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
         _recalCloseMs = 0;
         d.recalStarted = true;
         if (!in.inhibited && !in.k1AntiSeizeOwned) {
-            d.cmd = K1Command{true, K1Direction::Close, recalMs};
+            setCmd(d, K1Command{true, K1Direction::Close, recalMs}, K1CmdKind::Recal);
             closeIssued = true;
         }
     }
@@ -75,6 +82,11 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
     // 3. Movement permission; inhibit end re-arms the feed-forward.
     const bool canMove = !in.k1Busy && !in.inhibited && !in.k1AntiSeizeOwned;
     if (_prevInhibited && !in.inhibited) {
+        _ffApplied = false;
+        _needEval = true;
+    }
+    // Hold end re-arms the feed-forward (C13, D12): resume as after a mode entry.
+    if (_prevHold && !in.hold) {
         _ffApplied = false;
         _needEval = true;
     }
@@ -89,7 +101,7 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
         } else {
             _mode = K1Mode::Recalibrating;
             if (canMove && !closeIssued) {
-                d.cmd = K1Command{true, K1Direction::Close, recalMs - _recalCloseMs};
+                setCmd(d, K1Command{true, K1Direction::Close, recalMs - _recalCloseMs}, K1CmdKind::Recal);
             }
             runControl = false;
         }
@@ -110,14 +122,15 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
             const float from = _est.pct();
             switch (_mode) {
                 case K1Mode::Closed:
-                    d.cmd = toCommand(planMoveTo(from, 0.0f, g));
+                    setCmd(d, toCommand(planMoveTo(from, 0.0f, g)), K1CmdKind::Position);
                     break;
                 case K1Mode::FailPosFixed:
-                    d.cmd = toCommand(planMoveTo(from, static_cast<float>(g.k1FailPosPct), g));
+                    setCmd(d, toCommand(planMoveTo(from, static_cast<float>(g.k1FailPosPct), g)), K1CmdKind::Position);
                     break;
                 case K1Mode::FailPosFeedback:
                     if (!_anchorApplied) {
-                        d.cmd = toCommand(planMoveTo(from, static_cast<float>(g.k1FailPosPct), g));
+                        setCmd(d, toCommand(planMoveTo(from, static_cast<float>(g.k1FailPosPct), g)),
+                               K1CmdKind::Position);
                         _anchorApplied = true;
                         _lastEvalMs = nowMs;
                         _needEval = false;
@@ -127,6 +140,8 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
                 case K1Mode::Normal:
                 case K1Mode::FeedbackOnly:
                 case K1Mode::FeedforwardOnly: {
+                    // Hold (C13, D12): no evaluation, period timer and _needEval untouched.
+                    if (in.hold) break;
                     const uint64_t periodMs = static_cast<uint64_t>(g.k1PeriodS) * 1000ULL;
                     if (!_needEval && nowMs - _lastEvalMs < periodMs) break;
                     _needEval = false;
@@ -135,7 +150,7 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
                         const float x = feedforwardTarget(in.h1C, g.h2Set, in.h3C, g.k1SmallDiff);
                         const float dx = x > _xApplied ? x - _xApplied : _xApplied - x;
                         if (!_ffApplied || dx >= static_cast<float>(g.k1FfStepPct)) {
-                            d.cmd = toCommand(planMoveTo(from, x, g));
+                            setCmd(d, toCommand(planMoveTo(from, x, g)), K1CmdKind::Feedforward);
                             _ffApplied = true;
                             _xApplied = x;
                             break;
@@ -144,7 +159,7 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
                     }
                     // C7 step 6 / D4: H2 not Ok -> skip the feedback move, the period is still consumed.
                     if (_mode == K1Mode::FailPosFeedback && in.h2 != SensorHealth::Ok) break;
-                    d.cmd = toCommand(planFeedback(from, in.h2C, g.h2Set, g));
+                    setCmd(d, toCommand(planFeedback(from, in.h2C, g.h2Set, g)), K1CmdKind::Feedback);
                     break;
                 }
                 default:   // Wait: hold position
@@ -162,5 +177,6 @@ K1Decision K1Logic::update(const K1Inputs& in, const HomeHeatingSettings& g, uin
     _prevP4Requested = in.p4Requested;
     _prevHeating = in.heatingEnabled;
     _prevInhibited = in.inhibited;
+    _prevHold = in.hold;
     return d;
 }

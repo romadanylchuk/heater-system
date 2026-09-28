@@ -52,6 +52,9 @@ public:
     // Passthrough to CoreRuntime::setResultHook (stage 05, D7): observes
     // every applied command's id/status on the loop task.
     void setCommandResultHook(CommandResultHook h, void* ctx) { _runtime.setResultHook(h, ctx); }
+    // Passthrough to CoreRuntime::setProjectHandler (stage 09, D14): handles
+    // CommandType::Project (POST /api/project/cmd) on the loop task.
+    void setProjectCommandHandler(CommandExtensionHandler h, void* ctx) { _runtime.setProjectHandler(h, ctx); }
 
 private:
     static void onSettingChanged(size_t index, void* ctx);

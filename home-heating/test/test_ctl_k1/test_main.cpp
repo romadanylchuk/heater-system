@@ -2,6 +2,7 @@
 #include <HomeHeatingControlSettings.h>
 #include <HomeHeatingTypes.h>
 #include <K1Logic.h>
+#include <HomeHeatingController.h>
 
 // Stage 08 phase 4: K1 control state machine (C7). Defaults: travel 120 s,
 // overdrive 12 s (recal / anti-seize stroke 132 s), period 30 s, min pulse 1 s,
@@ -595,6 +596,213 @@ void test_reset_restarts_boot_recal() {
     assertCmd(d, K1Direction::Close, RECAL_MS);
 }
 
+// ---- stage 09 phase 6: hold + command kind (C13, D11, D12) --------------------
+
+static void assertKind(K1CmdKind k, const K1Decision& d) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(k), static_cast<int>(d.cmdKind));
+}
+
+// Sim-driven boot recal, then P4 on: the first Normal tick issues FF 25 %
+// (30 s OPEN); the pulse is played out so K1 is idle and at 25 %.
+// H2 is held at the setpoint so the following periods issue nothing.
+static void simToNormalIdle(Sim& sim) {
+    sim.ticks(133);
+    in.p4Requested = true;
+    in.p4Running = true;
+    in.h2C = 40.0f;                         // at the setpoint: no feedback while idling
+    uint64_t at = 0;
+    const K1Decision d = sim.untilCommand(1, &at);
+    assertCmd(d, K1Direction::Open, 30000u);
+    assertKind(K1CmdKind::Feedforward, d);
+    sim.ticks(31);
+}
+
+void test_hold_suppresses_normal_ff_and_feedback() {
+    Sim sim;
+    sim.ticks(133);
+    in.hold = true;
+    in.p4Requested = true;
+    in.p4Running = true;
+    in.h2C = 30.0f;                         // far below the setpoint
+    for (int i = 0; i < 100; ++i) {         // > 3 periods
+        const K1Decision d = sim.tick();
+        assertMode(K1Mode::Normal, d);
+        assertNoCmd(d);
+        assertKind(K1CmdKind::None, d);
+        TEST_ASSERT_FALSE(d.ffValid);
+    }
+}
+
+void test_hold_release_reapplies_ff_then_feedback() {
+    Sim sim;
+    simToNormalIdle(sim);
+    in.hold = true;
+    in.h3C = 66.0f;                         // x = 27.8 %: |dx| < k1FfStep
+    in.h2C = 38.5f;
+    for (int i = 0; i < 100; ++i) assertNoCmd(sim.tick());
+    in.hold = false;
+    const uint64_t tRel = sim.nowS;
+    K1Decision d = sim.tick();              // same tick: FF re-applied
+    assertKind(K1CmdKind::Feedforward, d);
+    TEST_ASSERT_TRUE(d.cmd.issue);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(K1Direction::Open), static_cast<int>(d.cmd.dir));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 27.778f, d.ffAppliedPct);
+    uint64_t at = 0;
+    d = sim.untilCommand(60, &at);          // next period: FF within step -> feedback
+    TEST_ASSERT_EQUAL_UINT64(tRel + 30, at);
+    assertCmd(d, K1Direction::Open, 3000u);
+    assertKind(K1CmdKind::Feedback, d);
+}
+
+void test_hold_does_not_suppress_recal_on_p4_falling_edge() {
+    bootKnown();
+    in.p4Requested = true;
+    in.p4Running = true;
+    step(10);                               // FF 30 s
+    in.hold = true;
+    assertNoCmd(step(40, 30000u, 0u));
+    in.p4Requested = false;
+    in.p4Running = false;
+    const K1Decision d = step(41);
+    TEST_ASSERT_TRUE(d.recalStarted);
+    assertCmd(d, K1Direction::Close, RECAL_MS);
+    assertKind(K1CmdKind::Recal, d);
+}
+
+void test_hold_does_not_suppress_recal_on_heating_disable() {
+    bootKnown();
+    in.hold = true;
+    in.heatingEnabled = false;
+    const K1Decision d = step(5);
+    TEST_ASSERT_TRUE(d.recalStarted);
+    assertCmd(d, K1Direction::Close, RECAL_MS);
+    assertKind(K1CmdKind::Recal, d);
+}
+
+// Release while K1 is still busy with the step-test pulse (D12): nothing on the
+// release tick (canMove is false), then FF re-applied at the first idle tick.
+void test_hold_release_while_busy_waits_for_idle() {
+    Sim sim;
+    simToNormalIdle(sim);                   // idle at 25 %
+    in.hold = true;
+    sim.running = true;                     // step-test OPEN pulse, 10 s
+    sim.dir = K1Direction::Open;
+    sim.remaining = 10000u;
+    for (int i = 0; i < 3; ++i) assertNoCmd(sim.tick());
+    in.hold = false;
+    K1Decision d = sim.tick();              // release tick: K1 still busy
+    assertNoCmd(d);
+    assertKind(K1CmdKind::None, d);
+    for (int i = 0; i < 5; ++i) {           // pulse still running
+        TEST_ASSERT_TRUE(sim.running);
+        assertNoCmd(sim.tick());
+    }
+    TEST_ASSERT_TRUE(sim.running);
+    d = sim.tick();                         // last 1 s of the pulse: K1 idle now
+    TEST_ASSERT_TRUE(d.cmd.issue);
+    assertKind(K1CmdKind::Feedforward, d);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(K1Direction::Close), static_cast<int>(d.cmd.dir));
+    TEST_ASSERT_UINT32_WITHIN(1000u, 10000u, d.cmd.ms);   // 33.3 % back to 25 %
+}
+
+void test_hold_does_not_suppress_closed_move() {
+    bootKnown();
+    in.p4Requested = true;
+    in.p4Running = true;
+    step(10);                               // FF 30 s -> 25 %
+    in.hold = true;
+    assertNoCmd(step(40, 30000u, 0u));
+    in.p4Running = false;                   // relay locked: Closed, no recal edge
+    const K1Decision d = step(41);
+    assertMode(K1Mode::Closed, d);
+    TEST_ASSERT_FALSE(d.recalStarted);
+    TEST_ASSERT_TRUE(d.cmd.issue);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(K1Direction::Close), static_cast<int>(d.cmd.dir));
+    assertKind(K1CmdKind::Position, d);
+}
+
+void test_hold_does_not_suppress_fail_pos_fixed() {
+    bootKnown();
+    in.hold = true;
+    in.fail = FailMode::Multi;
+    in.h1 = SensorHealth::Failed;
+    in.h2 = SensorHealth::Failed;
+    const K1Decision d = step(10);
+    assertMode(K1Mode::FailPosFixed, d);
+    assertCmd(d, K1Direction::Open, 36000u);
+    assertKind(K1CmdKind::Position, d);
+}
+
+void test_fail_pos_feedback_anchor_kind_and_hold() {
+    bootKnown();
+    in.p4Requested = true;
+    in.p4Running = true;
+    in.fail = FailMode::H3;
+    in.h3 = SensorHealth::Failed;
+    in.h2C = 38.5f;
+    in.hold = true;
+    K1Decision d = step(10);                // anchor is not held
+    assertMode(K1Mode::FailPosFeedback, d);
+    assertCmd(d, K1Direction::Open, 36000u);
+    assertKind(K1CmdKind::Position, d);
+    d = step(46, 36000u, 0u);               // periodic feedback is held
+    assertNoCmd(d);
+    assertKind(K1CmdKind::None, d);
+    in.hold = false;
+    d = step(47);                           // release: immediate evaluation
+    assertCmd(d, K1Direction::Open, 3000u);
+    assertKind(K1CmdKind::Feedback, d);
+}
+
+void test_boot_recal_and_resume_kind_recal() {
+    K1Decision d = step(0);
+    assertCmd(d, K1Direction::Close, RECAL_MS);
+    assertKind(K1CmdKind::Recal, d);
+    d = step(50, 0u, 50000u);               // continuation CLOSE
+    assertCmd(d, K1Direction::Close, 82000u);
+    assertKind(K1CmdKind::Recal, d);
+}
+
+void test_no_command_kind_none() {
+    bootKnown();
+    const K1Decision d = step(5);           // Closed at 0 %: nothing to do
+    assertMode(K1Mode::Closed, d);
+    assertNoCmd(d);
+    assertKind(K1CmdKind::None, d);
+}
+
+// Controller passthrough: HomeHeatingInputs.k1Hold -> K1Inputs.hold.
+static HomeHeatingInputs ctlInputs() {
+    HomeHeatingInputs ci{};
+    ci.sensor[HH_SENSOR_H1] = SensorInput{SensorState::Ok, 30.0f, false};
+    ci.sensor[HH_SENSOR_H2] = SensorInput{SensorState::Ok, 30.0f, false};
+    ci.sensor[HH_SENSOR_H3] = SensorInput{SensorState::Ok, 70.0f, false};
+    ci.sensor[HH_SENSOR_H4] = SensorInput{SensorState::Ok, 50.0f, false};
+    ci.p4RelayActual = true;
+    ci.k1Motion = K1Motion{0u, 0u};
+    return ci;
+}
+
+void test_controller_k1_hold_passthrough() {
+    HomeHeatingController ref, held;
+    ref.reset(0);
+    held.reset(0);
+    HomeHeatingInputs a = ctlInputs();
+    HomeHeatingInputs b = ctlInputs();
+    b.k1Hold = true;
+    int refPeriodic = 0;
+    for (uint64_t t = 0; t <= 100; ++t) {
+        const HomeHeatingOutputs oa = ref.update(a, g, t * 1000ULL);
+        const HomeHeatingOutputs ob = held.update(b, g, t * 1000ULL);
+        a.k1Motion = K1Motion{0u, t == 0 ? RECAL_MS : 0u};
+        b.k1Motion = a.k1Motion;
+        if (oa.k1.cmdKind == K1CmdKind::Feedforward || oa.k1.cmdKind == K1CmdKind::Feedback) ++refPeriodic;
+        TEST_ASSERT_TRUE(ob.k1.cmdKind != K1CmdKind::Feedforward && ob.k1.cmdKind != K1CmdKind::Feedback);
+        if (t > 1) TEST_ASSERT_EQUAL_INT(static_cast<int>(K1Mode::Normal), static_cast<int>(ob.k1.mode));
+    }
+    TEST_ASSERT_TRUE(refPeriodic > 0);      // the reference did issue periodic moves
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_boot_recal_close_full_stroke_even_heating_off);
@@ -625,5 +833,16 @@ int main(int, char**) {
     RUN_TEST(test_anti_seize_full_stroke_returns_to_zero);
     RUN_TEST(test_anti_seize_aborted_stroke_closes_again);
     RUN_TEST(test_reset_restarts_boot_recal);
+    RUN_TEST(test_hold_suppresses_normal_ff_and_feedback);
+    RUN_TEST(test_hold_release_reapplies_ff_then_feedback);
+    RUN_TEST(test_hold_does_not_suppress_recal_on_p4_falling_edge);
+    RUN_TEST(test_hold_does_not_suppress_recal_on_heating_disable);
+    RUN_TEST(test_hold_release_while_busy_waits_for_idle);
+    RUN_TEST(test_hold_does_not_suppress_closed_move);
+    RUN_TEST(test_hold_does_not_suppress_fail_pos_fixed);
+    RUN_TEST(test_fail_pos_feedback_anchor_kind_and_hold);
+    RUN_TEST(test_boot_recal_and_resume_kind_recal);
+    RUN_TEST(test_no_command_kind_none);
+    RUN_TEST(test_controller_k1_hold_passthrough);
     return UNITY_END();
 }

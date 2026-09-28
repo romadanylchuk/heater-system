@@ -49,6 +49,8 @@ enum class RouteId : uint8_t {
     BackupImport,
     FactoryReset,
     OtaGrant,
+    // Stage 09.
+    ProjectCmd,
     Root,
     // Documentation-only (not in routeTable(), not dispatched through
     // routeMatcher/routeSpec): ElegantOTA's internal routes and the final

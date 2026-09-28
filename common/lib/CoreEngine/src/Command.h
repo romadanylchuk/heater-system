@@ -10,7 +10,8 @@
 // only supported way to construct a Command.
 // AssignSensor/ClearSensor/RescanOneWire (stage 03) are dispatched by CoreRuntime
 // to an optional extension handler (D22); the existing four types keep their
-// numeric values unchanged.
+// numeric values unchanged. Project (stage 09, D14) carries a project-defined
+// op code and is dispatched by CoreRuntime to the project handler.
 enum class CommandType : uint8_t {
     None = 0,
     SetNumber,
@@ -20,6 +21,7 @@ enum class CommandType : uint8_t {
     AssignSensor,
     ClearSensor,
     RescanOneWire,
+    Project,
 };
 enum class CommandStatus : uint8_t {
     Ok = 0,
@@ -125,6 +127,18 @@ inline Command makeRescanOneWire(EventReason origin, uint32_t id) {
     cmd.type = CommandType::RescanOneWire;
     cmd.origin = origin;
     cmd.id = id;
+    return cmd;
+}
+
+// Project-defined command (stage 09, D14): op is stored in settingIndex and
+// interpreted only by the project handler. op == 0 gives type = None, the same
+// convention as makeSetText's overflow case (rejected as InvalidCommand).
+inline Command makeProjectCommand(uint8_t op, EventReason origin, uint32_t id) {
+    Command cmd;
+    cmd.origin = origin;
+    cmd.settingIndex = op;
+    cmd.id = id;
+    cmd.type = op == 0 ? CommandType::None : CommandType::Project;
     return cmd;
 }
 

@@ -1,6 +1,7 @@
 #include <unity.h>
 #include <BoardConfig.h>
 #include <BoilerRoomControlSettings.h>
+#include <BoilerRoomDiagSettings.h>
 #include <BoilerRoomHa.h>
 #include <CommonState.h>
 #include <ConfigEngine.h>
@@ -115,6 +116,10 @@ static void test_boiler_room_hw_runtime_starts_with_real_schema_and_descriptor()
     TEST_ASSERT_FALSE(state.k1.present);
 }
 
+// Exact HA registry size without the custom entities (common + HW + settings,
+// incl. the 12 stage-09 diag settings). Change only with a deliberate entity-budget review (D21).
+constexpr size_t EXPECTED_HA_PLAIN_COUNT = 49;
+
 static int findHaKey(const HaEntityRegistry& reg, const char* key) {
     return reg.findByKey(key, strlen(key));
 }
@@ -225,7 +230,7 @@ static void test_discovery_payloads_fit() {
     checkDiscoveryPayloadsFit(nullptr, 0);
 }
 
-// Stage 07: the same loop over the registry with the 15 controller entities.
+// Stage 07/09: the same loop over the registry with the 18 controller entities.
 static void test_discovery_payloads_fit_with_custom() {
     checkDiscoveryPayloadsFit(BOILER_ROOM_HA_ENTITIES, BOILER_ROOM_HA_ENTITY_COUNT);
     MemoryKvStore cfgStore, logStore;
@@ -313,9 +318,10 @@ static void test_display_settings_resolve_in_schema() {
     TEST_ASSERT_TRUE(findHaKey(reg, "disp_bright") >= 0);
 }
 
-// Stage 07: the controller settings table is appended LAST (tables[4]).
+// Stage 07: the controller settings table is appended (tables[4]); stage 09
+// appends the diag table after it (tables[5]).
 static void test_control_settings_table_appended_last() {
-    TEST_ASSERT_EQUAL_UINT32(5, static_cast<uint32_t>(BOILER_ROOM_SCHEMA.tableCount));
+    TEST_ASSERT_EQUAL_UINT32(6, static_cast<uint32_t>(BOILER_ROOM_SCHEMA.tableCount));
     TEST_ASSERT_EQUAL_PTR(BOILER_ROOM_CONTROL_SETTINGS, BOILER_ROOM_SCHEMA.tables[4].items);
     TEST_ASSERT_EQUAL_UINT32(BOILER_ROOM_CONTROL_SETTING_COUNT, static_cast<uint32_t>(BOILER_ROOM_SCHEMA.tables[4].count));
     TEST_ASSERT_EQUAL_UINT16(1, BOILER_ROOM_CONFIG_VERSION);
@@ -326,7 +332,7 @@ static void test_control_settings_table_appended_last() {
     TEST_ASSERT_TRUE(log.begin());
     ConfigEngine config(cfgStore, log);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(BOILER_ROOM_SCHEMA, 0)));
-    TEST_ASSERT_EQUAL_UINT32(43, static_cast<uint32_t>(config.count()));
+    TEST_ASSERT_EQUAL_UINT32(55, static_cast<uint32_t>(config.count()));
 
     // Earlier indices did not move.
     const SettingDescriptor* first = config.descriptor(static_cast<size_t>(BoilerRoomSetting::HomeNoNeed));
@@ -335,6 +341,35 @@ static void test_control_settings_table_appended_last() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(BoilerRoomSetting::HomeNoNeed), config.indexOf(BR_KEY_HOME_NO_NEED));
     TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_ROTATE_S) >= 0);
     TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_BRIGHTNESS) >= 0);
+}
+
+// Stage 09 (C7/D20): the diag settings table is appended LAST (tables[5]),
+// config version unchanged; every key resolves to its own row (unique),
+// key == nvsKey (<= 15 chars), group "diag", no HA_SWITCH flag.
+static void test_diag_settings_table_appended_last() {
+    TEST_ASSERT_EQUAL_UINT32(6, static_cast<uint32_t>(BOILER_ROOM_SCHEMA.tableCount));
+    TEST_ASSERT_EQUAL_PTR(BOILER_ROOM_DIAG_SETTINGS, BOILER_ROOM_SCHEMA.tables[5].items);
+    TEST_ASSERT_EQUAL_UINT32(BOILER_ROOM_DIAG_SETTING_COUNT, static_cast<uint32_t>(BOILER_ROOM_SCHEMA.tables[5].count));
+    TEST_ASSERT_EQUAL_UINT16(1, BOILER_ROOM_CONFIG_VERSION);
+
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(BOILER_ROOM_SCHEMA, 0)));
+    const size_t base = config.count() - BOILER_ROOM_DIAG_SETTING_COUNT;
+    for (size_t i = 0; i < BOILER_ROOM_DIAG_SETTING_COUNT; ++i) {
+        const SettingDescriptor& d = BOILER_ROOM_DIAG_SETTINGS[i];
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(base + i), config.indexOf(d.key), d.key);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(d.key, d.nvsKey, d.key);
+        TEST_ASSERT_TRUE_MESSAGE(strlen(d.nvsKey) <= 15, d.key);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("diag", d.group, d.key);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, d.flags & SETTING_FLAG_HA_SWITCH, d.key);
+    }
+    // Earlier indices did not move.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BoilerRoomSetting::HomeNoNeed), config.indexOf(BR_KEY_HOME_NO_NEED));
+    TEST_ASSERT_TRUE(config.indexOf(BR_KEY_ACC_T_BASE) < static_cast<int>(base));
 }
 
 struct ControlKeyExpectation {
@@ -476,6 +511,61 @@ static void test_control_settings_ha_entities() {
     TEST_ASSERT_TRUE(reg.entity(dOn).configCategory);
 }
 
+// Stage 09 (C9, D20, D21): the 12 diag settings become config-category HA
+// entities (enables = Switch, thresholds = Number) and the 3 warning customs
+// are appended; exact registry counts pin the entity budget.
+static void test_diag_ha_entities_and_exact_counts() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(BOILER_ROOM_SCHEMA, 0)));
+
+    HaEntityRegistry plain;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(plain.build(config, BOILER_ROOM_HW, nullptr, 0)));
+    HaEntityRegistry reg;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(reg.build(config, BOILER_ROOM_HW, BOILER_ROOM_HA_ENTITIES, BOILER_ROOM_HA_ENTITY_COUNT)));
+    TEST_ASSERT_EQUAL_UINT32(18, BOILER_ROOM_HA_ENTITY_COUNT);
+    TEST_ASSERT_EQUAL_UINT32(EXPECTED_HA_PLAIN_COUNT, plain.count());
+    TEST_ASSERT_EQUAL_UINT32(EXPECTED_HA_PLAIN_COUNT + 18, reg.count());
+    TEST_ASSERT_TRUE(reg.count() <= HA_MAX_ENTITIES);
+
+    const char* switches[] = {"b1_en", "b3_en", "b6_en"};
+    for (const char* key : switches) {
+        const int i = findHaKey(reg, key);
+        TEST_ASSERT_TRUE_MESSAGE(i >= 0, key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(HaComponent::Switch), static_cast<int>(reg.entity(i).component), key);
+        TEST_ASSERT_TRUE_MESSAGE(reg.entity(i).configCategory, key);
+    }
+    const char* numbers[] = {"b1_min_on", "b1_delta", "b1_min_rise", "b3_min_on", "b3_delta", "b3_min_rise",
+        "b6_min_on", "b6_delta", "b6_min_rise"};
+    for (const char* key : numbers) {
+        const int i = findHaKey(reg, key);
+        TEST_ASSERT_TRUE_MESSAGE(i >= 0, key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(HaComponent::Number), static_cast<int>(reg.entity(i).component), key);
+        TEST_ASSERT_TRUE_MESSAGE(reg.entity(i).configCategory, key);
+    }
+    const char* warns[] = {"warn_p3_no_flow", "warn_p1_not_charging", "warn_p2_no_effect"};
+    for (const char* key : warns) {
+        const int i = findHaKey(reg, key);
+        TEST_ASSERT_TRUE_MESSAGE(i >= 0, key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(HaSource::Custom), static_cast<int>(reg.entity(i).source), key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            static_cast<int>(HaComponent::BinarySensor), static_cast<int>(reg.entity(i).component), key);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("problem", reg.entity(i).custom->deviceClass, key);
+        TEST_ASSERT_NULL_MESSAGE(reg.entity(i).custom->entityCategory, key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(-1, findHaKey(plain, key), key);
+    }
+    for (size_t a = 0; a < reg.count(); ++a) {   // every key unique across the whole registry
+        for (size_t b = a + 1; b < reg.count(); ++b) {
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, strcmp(reg.entity(a).key, reg.entity(b).key), reg.entity(a).key);
+        }
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_relay_channel_count_is_six);
@@ -495,5 +585,7 @@ int main() {
     RUN_TEST(test_control_keys_min_max);
     RUN_TEST(test_overheat_cap_95);
     RUN_TEST(test_control_settings_ha_entities);
+    RUN_TEST(test_diag_ha_entities_and_exact_counts);
+    RUN_TEST(test_diag_settings_table_appended_last);
     return UNITY_END();
 }

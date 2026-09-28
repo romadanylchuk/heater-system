@@ -414,7 +414,9 @@ var App = (function () {
         net.mqtt ? 'ok' : 'amber'));
     }
     if (net.ap) chips.push(UI.chip(t('net.ap_mode'), 'amber'));
-    bits(st.warnings >>> 0).forEach(function (b) { chips.push(UI.chip(t('status.warning', { n: b }), 'amber')); });
+    bits(st.warnings >>> 0).forEach(function (b) {
+      chips.push(UI.chip(tOr('warn.' + b, t('status.warning', { n: b })), 'amber'));
+    });
     DIAG.forEach(function (k) { if (diag[k]) chips.push(UI.chip(t('status.diag.' + k), 'amber')); });
     if (st.inhibited) chips.push(UI.chip(t('status.inhibited'), 'amber'));
     if (ota.inProgress) chips.push(UI.chip(t('status.ota_running'), 'amber'));
@@ -782,9 +784,12 @@ var App = (function () {
   // D22: optional 4th PROJECT.render argument. Widgets write a setting through
   // the same POST /api/config command flow as the Settings page (session,
   // CSRF, 202 + /api/cmd poll); resolves like command(). Widgets that take
-  // only three arguments simply ignore it.
+  // only three arguments simply ignore it. Stage 09 (C16): projectCmd(op)
+  // sends a project command via POST /api/project/cmd (same flow); projects
+  // without a handler answer invalid_command.
   var SLOT_API = {
-    setConfig: function (key, value) { return command('/api/config', { key: key, value: value }); }
+    setConfig: function (key, value) { return command('/api/config', { key: key, value: value }); },
+    projectCmd: function (op) { return command('/api/project/cmd', { op: op }); }
   };
 
   function statusSlots(v, st) {

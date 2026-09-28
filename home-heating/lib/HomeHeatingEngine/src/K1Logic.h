@@ -17,6 +17,17 @@
 //  5. mode selection (fail-safe table, D10, D12); a mode change re-arms FF;
 //  6. actions: Closed/FailPosFixed track their target every tick; periodic
 //     modes evaluate on mode entry / every k1Period while idle (A1, D5).
+//     Hold (stage 09 C13, D12): while in.hold the periodic FF/feedback
+//     evaluation is skipped (no command, period timer untouched); recal,
+//     Closed/FailPosFixed tracking and the FailPosFeedback anchor are never
+//     held. The hold falling edge re-arms FF and forces an evaluation at the
+//     first idle tick ("as after a mode entry", A1);
+//  7. outputs and edge memory.
+
+// Which part of the logic produced K1Decision.cmd (stage 09 C13, D11).
+// None whenever !cmd.issue.
+enum class K1CmdKind : uint8_t { None = 0, Recal = 1, Position = 2, Feedforward = 3, Feedback = 4 };
+
 struct K1Inputs {
     bool heatingEnabled;
     bool p4Requested;           // this tick's P4Decision.on
@@ -28,6 +39,7 @@ struct K1Inputs {
     bool k1AntiSeizeOwned;      // K1Driver::owner() == K1Owner::AntiSeize
     bool inhibited;             // RelayBank::inhibited() (OTA)
     K1Motion motion;            // K1Driver::takeMotion() of this tick
+    bool hold = false;          // stage 09: K1 step test running (C13); appended last
 };
 
 struct K1Decision {
@@ -38,6 +50,7 @@ struct K1Decision {
     bool recalStarted, recalEnded;   // one-tick edge flags
     bool ffValid;                    // a feed-forward target has been applied in this mode
     float ffAppliedPct;              // last applied feed-forward target (display)
+    K1CmdKind cmdKind = K1CmdKind::None;   // stage 09 (C13, D11); appended last
 };
 
 class K1Logic {
@@ -61,4 +74,5 @@ private:
     bool _prevP4Requested = false;
     bool _prevHeating = false;
     bool _prevInhibited = false;
+    bool _prevHold = false;
 };

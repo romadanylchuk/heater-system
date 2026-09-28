@@ -526,6 +526,24 @@ static void web_auth_test_routes_spec_not_found_is_sentinel() {
     TEST_ASSERT_TRUE(&routeSpec(static_cast<RouteId>(0xEE)) == &ROUTE_NOT_FOUND);
 }
 
+// Stage 09 (C4): the project command route is a plain Write form POST,
+// covered by the global form-body guard and outside /ota/ and /update.
+static void web_auth_test_routes_project_cmd_spec() {
+    const RouteSpec& s = routeSpec(RouteId::ProjectCmd);
+    TEST_ASSERT_TRUE(findRouteSpec(RouteId::ProjectCmd) == &s);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(RouteMethod::Post), static_cast<int>(s.method));
+    TEST_ASSERT_EQUAL_STRING("/api/project/cmd", s.path);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(RouteMatch::Exact), static_cast<int>(s.match));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(Access::Write), static_cast<int>(s.access));
+    TEST_ASSERT_FALSE(s.stateChangingGet);
+    TEST_ASSERT_TRUE(formBodyGuardRefuses(true, s.path, WEB_FORM_BODY_MAX + 1));
+    TEST_ASSERT_FALSE(formBodyGuardRefuses(true, s.path, WEB_FORM_BODY_MAX));
+    size_t n = 0;
+    const RouteSpec* t = routeTable(n);
+    char err[64] = {};
+    TEST_ASSERT_TRUE(validateRouteTable(t, n, err, sizeof(err)));
+}
+
 static void web_auth_test_form_guard_refuses_over_cap_everywhere() {
     const size_t over = WEB_FORM_BODY_MAX + 1;
     // Any method, any path: API reads/writes, pages, unknown URLs.
@@ -603,5 +621,6 @@ inline void runWebAuthSuite() {
     RUN_TEST(web_auth_test_routes_shadowed_exact_fails);
     RUN_TEST(web_auth_test_routes_form_guard_is_global);
     RUN_TEST(web_auth_test_routes_spec_not_found_is_sentinel);
+    RUN_TEST(web_auth_test_routes_project_cmd_spec);
     RUN_TEST(web_auth_test_form_guard_refuses_over_cap_everywhere);
 }

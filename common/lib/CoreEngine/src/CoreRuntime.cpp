@@ -57,6 +57,9 @@ CommandStatus CoreRuntime::apply(Command& cmd, uint64_t monoMs) {
         case CommandType::None:
             status = CommandStatus::InvalidCommand;
             break;
+        case CommandType::Project:
+            status = _projHandler != nullptr ? _projHandler(cmd, monoMs, _projCtx) : CommandStatus::InvalidCommand;
+            break;
         case CommandType::AssignSensor:
         case CommandType::ClearSensor:
         case CommandType::RescanOneWire:

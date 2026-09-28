@@ -4,6 +4,7 @@
 #include "HwRuntimeSuite.h"
 #include "K1DriverSuite.h"
 #include "RelayBankSuite.h"
+#include "SensorHistorySuite.h"
 #include "SensorServiceSuite.h"
 #include "SensorSuite.h"
 
@@ -18,4 +19,5 @@ inline void runHwSuite() {
     runSensorServiceSuite();
     runAntiSeizeSuite();
     runHwRuntimeSuite();
+    runSensorHistorySuite();
 }

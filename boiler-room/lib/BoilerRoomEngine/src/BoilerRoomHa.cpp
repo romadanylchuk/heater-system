@@ -1,6 +1,7 @@
 #include "BoilerRoomHa.h"
 #include <stdio.h>
 #include "BoilerRoomAlarms.h"
+#include "BoilerRoomDiagnostics.h"
 
 namespace {
 
@@ -55,6 +56,14 @@ bool alarmState(const CommonState& s, char* out, size_t cap) {
     return writeOnOff(((s.alarms.activeMask >> BIT) & 1u) != 0, out, cap);
 }
 
+// Stage 09 (C9): a pump-response warning bit of CommonState.diag.warningMask.
+// Always available, like the alarm entities.
+template <uint8_t BIT>
+bool warnState(const CommonState& s, char* out, size_t cap) {
+    static_assert(BIT < 8, "warning bit outside the project-owned range (D6)");
+    return writeOnOff(((s.diag.warningMask >> BIT) & 1u) != 0, out, cap);
+}
+
 constexpr const char* PROBLEM = "problem";
 constexpr const char* DIAG = "diagnostic";
 constexpr uint8_t S = BR_ALARM_SENSOR_BASE;
@@ -94,5 +103,11 @@ const HaCustomEntity BOILER_ROOM_HA_ENTITIES[BOILER_ROOM_HA_ENTITY_TOTAL] = {
         alarmState<S + 4>},
     {"alarm_t6_fault", "Alarm T6 fault", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, DIAG,
         alarmState<S + 5>},
+    {"warn_p3_no_flow", "P3 no flow (B1)", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, nullptr,
+        warnState<BR_WARN_B1>},
+    {"warn_p1_not_charging", "P1 not charging (B3)", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, nullptr,
+        warnState<BR_WARN_B3>},
+    {"warn_p2_no_effect", "P2 no effect (B6)", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, nullptr,
+        warnState<BR_WARN_B6>},
 };
 const size_t BOILER_ROOM_HA_ENTITY_COUNT = sizeof(BOILER_ROOM_HA_ENTITIES) / sizeof(BOILER_ROOM_HA_ENTITIES[0]);

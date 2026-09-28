@@ -59,6 +59,13 @@ public:
     bool hasMoved() const { return _hasMoved; }
     uint64_t lastMoveMs() const { return _lastMoveMs; }
 
+    // Monotonic count of relay energizations (power turned ON from idle,
+    // stage 09 C2/D8). Incremented at the single power-ON site in tick(); a
+    // same-direction extension is not a new start, a reversal counts once
+    // more. Zeroed by begin(); wraps modulo 2^32 (consumers use unsigned
+    // deltas). takeMotion() is unaffected.
+    uint32_t runStarts() const { return _runStarts; }
+
 private:
     void stopRun(uint64_t nowMs);
 
@@ -81,4 +88,5 @@ private:
     K1Motion _motion = {0, 0};
     bool _hasMoved = false;
     uint64_t _lastMoveMs = 0;
+    uint32_t _runStarts = 0;
 };

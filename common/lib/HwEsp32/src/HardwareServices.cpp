@@ -48,6 +48,7 @@ void HardwareServices::tick() {
         civil.weekday = 0;
         local = makeLocalTimeInfo(civil);
     }
+    _local = local;
     _runtime.tick(_core.time().monoMs(), local);
 }
 

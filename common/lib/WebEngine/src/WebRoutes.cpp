@@ -40,6 +40,8 @@ constexpr RouteSpec ROUTES[] = {
     {RouteId::BackupImport, RouteMethod::Post, "/api/backup/import", RouteMatch::Exact, Access::Write, false},
     {RouteId::FactoryReset, RouteMethod::Post, "/api/factory-reset", RouteMatch::Exact, Access::Write, false},
     {RouteId::OtaGrant, RouteMethod::Post, "/api/ota/grant", RouteMatch::Exact, Access::Write, false},
+    // -- Stage 09 ----------------------------------------------------------
+    {RouteId::ProjectCmd, RouteMethod::Post, "/api/project/cmd", RouteMatch::Exact, Access::Write, false},
     {RouteId::Root, RouteMethod::Get, "/", RouteMatch::Exact, Access::Public, false},
 };
 

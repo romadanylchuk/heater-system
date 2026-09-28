@@ -24,3 +24,16 @@ constexpr uint16_t BR_EVENT_PUMP_REQUEST = EVENT_TYPE_PROJECT_BASE + 1;
 // per boot by BoilerRoomRuntime::begin(). Project-owned: the common codes 1..6
 // live in HardwareStatus.h; 32+ is reserved for boiler-room.
 constexpr uint16_t BR_DIAG_CODE_SETTING_MISSING = 32;
+
+// Stage 09 (C9, D7): a pump-response diagnostic warning (B1/B3/B6) was raised or
+// cleared. value = warning bit (BR_WARN_*), aux = 1 raised / 0 cleared, reason
+// Logic. Source = BR_EVENT_SOURCE_DIAG_BASE + bit*2 + raised -- distinct per
+// check AND direction, so the 60 s (type, source) limiter never swallows a
+// raise/clear pair (A5). 0x40 is unused by the other boiler-room sources.
+constexpr uint16_t BR_EVENT_DIAG_WARNING = EVENT_TYPE_PROJECT_BASE + 2;
+constexpr uint16_t BR_EVENT_SOURCE_DIAG_BASE = EVENT_SOURCE_PROJECT_BASE + 0x40;
+
+// DiagnosticWarning code for "a diagnostics setting key is missing / mistyped"
+// (D2): source = EVENT_SOURCE_DIAG_BASE + this code, value = BrDiagKey index.
+// Only the diagnostics are disabled; control readiness is unaffected.
+constexpr uint16_t BR_DIAG_CODE_DIAG_SETTING_MISSING = 33;

@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "HomeHeatingAlarms.h"
+#include "HomeHeatingDiagnostics.h"
 
 namespace {
 
@@ -72,9 +73,62 @@ bool alarmState(const CommonState& s, char* out, size_t cap) {
     return writeOnOff(((s.alarms.activeMask >> BIT) & 1u) != 0, out, cap);
 }
 
+// ---- stage 09 (C15) ----
+
+template <uint8_t BIT>
+bool warnState(const CommonState& s, char* out, size_t cap) {
+    static_assert(BIT < 32, "warning bit out of range");
+    return writeOnOff(((s.diag.warningMask >> BIT) & 1u) != 0, out, cap);
+}
+
+bool writeOneDecimal(float v, char* out, size_t cap) {
+    if (!isfinite(v)) {
+        return false;
+    }
+    snprintf(out, cap, "%.1f", static_cast<double>(v));
+    return true;
+}
+
+bool h2ErrorState(const CommonState&, char* out, size_t cap) {
+    const HomeHeatingStatus* st = readyStatus();
+    return st != nullptr && st->h2ErrValid && writeOneDecimal(st->h2ErrC, out, cap);
+}
+
+bool k1LastPulseState(const CommonState&, char* out, size_t cap) {
+    const HomeHeatingStatus* st = readyStatus();
+    return st != nullptr && st->lastPulseDir != 0 && writeOneDecimal(st->lastPulseS, out, cap);
+}
+
+bool k1LastPulseDirState(const CommonState&, char* out, size_t cap) {
+    const HomeHeatingStatus* st = readyStatus();
+    if (st == nullptr) {
+        return false;
+    }
+    return writeText(st->lastPulseDir > 0 ? "open" : (st->lastPulseDir < 0 ? "close" : "none"), out, cap);
+}
+
+bool k1PulsesTodayState(const CommonState&, char* out, size_t cap) {
+    const HomeHeatingStatus* st = readyStatus();
+    if (st == nullptr) {
+        return false;
+    }
+    snprintf(out, cap, "%lu", static_cast<unsigned long>(st->pulsesToday));
+    return true;
+}
+
+bool k1PulsesYesterdayState(const CommonState&, char* out, size_t cap) {
+    const HomeHeatingStatus* st = readyStatus();
+    if (st == nullptr || !st->pulsesYesterdayValid) {
+        return false;
+    }
+    snprintf(out, cap, "%lu", static_cast<unsigned long>(st->pulsesYesterday));
+    return true;
+}
+
 constexpr const char* PROBLEM = "problem";
 constexpr const char* DIAG = "diagnostic";
 constexpr uint8_t S = HH_ALARM_SENSOR_BASE;
+constexpr const char* DEG_C = "\xC2\xB0" "C";   // degC in UTF-8, as HaDiscovery's temperature unit
 
 }  // namespace
 
@@ -108,5 +162,16 @@ const HaCustomEntity HOME_HEATING_HA_ENTITIES[HOME_HEATING_HA_ENTITY_TOTAL] = {
         alarmState<S + 2>},
     {"alarm_h4_fault", "Alarm H4 fault", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, DIAG,
         alarmState<S + 3>},
+    // ---- stage 09 (C15), appended ----
+    {"warn_p4_no_flow", "P4 no flow (H1)", HaComponent::BinarySensor, nullptr, PROBLEM, nullptr, nullptr,
+        warnState<HH_WARN_H1>},
+    {"h2_error", "H2 error", HaComponent::Sensor, DEG_C, nullptr, "measurement", nullptr, h2ErrorState},
+    {"k1_last_pulse", "K1 last pulse", HaComponent::Sensor, "s", nullptr, "measurement", nullptr, k1LastPulseState},
+    {"k1_last_pulse_dir", "K1 last pulse direction", HaComponent::Sensor, nullptr, nullptr, nullptr, DIAG,
+        k1LastPulseDirState},
+    {"k1_pulses_today", "K1 pulses today", HaComponent::Sensor, nullptr, nullptr, "total_increasing", DIAG,
+        k1PulsesTodayState},
+    {"k1_pulses_yesterday", "K1 pulses yesterday", HaComponent::Sensor, nullptr, nullptr, nullptr, DIAG,
+        k1PulsesYesterdayState},
 };
 const size_t HOME_HEATING_HA_ENTITY_COUNT = sizeof(HOME_HEATING_HA_ENTITIES) / sizeof(HOME_HEATING_HA_ENTITIES[0]);

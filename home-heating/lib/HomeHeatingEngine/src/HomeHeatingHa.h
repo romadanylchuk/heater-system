@@ -3,7 +3,7 @@
 #include <HaEntityRegistry.h>
 #include "HomeHeatingStatus.h"
 
-// Home-heating Home Assistant custom entities (stage 08, C13): 16 entries
+// Home-heating Home Assistant custom entities (stage 08 C13, stage 09 C15): 22 entries
 // appended by HaEntityRegistry::build after the common ones. Keys are binding
 // (unique_id = <uniquePrefix>_<key>):
 //  - no_need (BinarySensor), p4_reason, k2_mode ("tank"/"bypass", the
@@ -15,12 +15,21 @@
 //    alarm_multi_failsafe, alarm_h4_failsafe (problem, bits 0..4) and
 //    alarm_h1_fault..alarm_h4_fault (problem, diagnostic, bits 8..11): from
 //    CommonState.alarms.activeMask.
+// Stage 09 (C15), appended:
+//  - warn_p4_no_flow (BinarySensor, problem): CommonState.diag.warningMask bit
+//    HH_WARN_H1, always available.
+//  - h2_error (degC, measurement, 1 decimal): unavailable unless ready and
+//    h2ErrValid; k1_last_pulse (s, measurement, 1 decimal): unavailable while
+//    the last pulse direction is 0; k1_last_pulse_dir ("open"/"close"/"none",
+//    diagnostic); k1_pulses_today (total_increasing, diagnostic);
+//    k1_pulses_yesterday (diagnostic, unavailable until the first local-day
+//    rollover). All unavailable while unbound or not ready.
 // H1..H4 temperatures, relay_p4/relay_k2, the heating_enabled switch and the
 // h2_set number come from the common registry (settings, sensors, relays).
 // The state functions read a file-static pointer set once at startup (loop
 // task / setup only); nullptr = the status entities are unavailable.
 void bindHomeHeatingHaStatus(const HomeHeatingStatus* status);
 
-constexpr size_t HOME_HEATING_HA_ENTITY_TOTAL = 16;
+constexpr size_t HOME_HEATING_HA_ENTITY_TOTAL = 22;
 extern const HaCustomEntity HOME_HEATING_HA_ENTITIES[HOME_HEATING_HA_ENTITY_TOTAL];
-extern const size_t HOME_HEATING_HA_ENTITY_COUNT;   // 16
+extern const size_t HOME_HEATING_HA_ENTITY_COUNT;   // 22

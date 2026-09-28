@@ -867,6 +867,338 @@ static void test_begin_ok_logs_no_diag() {
     TEST_ASSERT_EQUAL_UINT(0, countType(sink, toU16(EventType::DiagnosticWarning)));
 }
 
+// ---- stage 09 (C9): pump-response diagnostics wiring -------------------------------
+
+constexpr uint16_t DIAG_MISSING_SRC = static_cast<uint16_t>(EVENT_SOURCE_DIAG_BASE + BR_DIAG_CODE_DIAG_SETTING_MISSING);
+
+static uint16_t warnSrc(uint8_t bit, bool raised) {
+    return static_cast<uint16_t>(BR_EVENT_SOURCE_DIAG_BASE + bit * 2u + (raised ? 1u : 0u));
+}
+
+// The boiler-room schema WITHOUT the diag table (the stage-07 shape, 5 tables).
+inline constexpr ConfigSchema SCHEMA_NO_DIAG = {"boiler-room", BOILER_ROOM_CONFIG_VERSION, BOILER_ROOM_TABLES, 5,
+    nullptr, 0};
+
+// A diag table whose first key (b1En) has the wrong type (Int instead of Bool).
+inline constexpr SettingDescriptor MISTYPED_DIAG_SETTINGS[] = {
+    intSetting("b1En", "b1En", "B1 enable (mistyped)", "B1 (mistyped)", "", "diag", 0, 1, 1),
+};
+inline constexpr SettingsTable MISTYPED_TABLES[] = {COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE,
+    makeTable(BOILER_ROOM_SETTINGS), DISPLAY_SETTINGS_TABLE, BOILER_ROOM_CONTROL_SETTINGS_TABLE,
+    makeTable(MISTYPED_DIAG_SETTINGS)};
+inline constexpr ConfigSchema SCHEMA_MISTYPED_DIAG = {"boiler-room", BOILER_ROOM_CONFIG_VERSION, MISTYPED_TABLES, 6,
+    nullptr, 0};
+
+// B1 scenario: T3 70 / T6 40 constant, P3 NORMAL (link down -> supply NORMAL = ON).
+static void setupB1(Fixture& f) {
+    f.setOk(BR_SENSOR_T3, 70.0f);
+    f.setOk(BR_SENSOR_T6, 40.0f);
+    f.sink.clear();
+}
+
+// Steps until P3 is actually ON (after the boot lock); returns that time.
+static uint64_t runUntilP3Actual(Fixture& f, uint64_t from) {
+    uint64_t t = from;
+    while (!f.relays.actual(BR_PUMP_P3)) {
+        t += 1000;
+        f.step(t);
+        TEST_ASSERT_TRUE_MESSAGE(t < 5 * 60000ull, "P3 never went actually ON");
+    }
+    return t;
+}
+
+// Steps until warning bit 0 is set; returns that time.
+static uint64_t runUntilB1(Fixture& f, uint64_t from, uint64_t limit) {
+    uint64_t t = from;
+    while ((f.state.diag.warningMask & 1u) == 0) {
+        t += 1000;
+        f.step(t);
+        TEST_ASSERT_TRUE_MESSAGE(t < limit, "B1 never raised");
+    }
+    return t;
+}
+
+static void test_diag_b1_raises_after_min_on_and_clears_on_rise() {
+    Fixture f;
+    TEST_ASSERT_TRUE(f.rt.diagReady());
+    setupB1(f);
+    f.state.diag.warningMask = 0xABCD0100u;   // bits 8..31 belong to others (D6)
+    f.step(1000);
+    TEST_ASSERT_TRUE(f.status.pump[BR_PUMP_P3].on);   // requested by the supply logic
+    TEST_ASSERT_EQUAL_HEX32(0xABCD0100u, f.state.diag.warningMask);
+    const uint64_t onAt = runUntilP3Actual(f, 1000);
+    TEST_ASSERT_EQUAL_UINT(0, countType(f.sink, BR_EVENT_DIAG_WARNING));
+    // Relay-actual only (A1): nothing tracked before the lock released P3.
+    TEST_ASSERT_TRUE(onAt >= LOCK_MS);
+    const uint64_t raisedAt = runUntilB1(f, onAt, onAt + 5 * 60000ull);
+    TEST_ASSERT_TRUE(raisedAt >= onAt + 3 * 60000ull);
+    TEST_ASSERT_TRUE(raisedAt <= onAt + 3 * 60000ull + 1000);
+    TEST_ASSERT_EQUAL_HEX32(0xABCD0100u, f.state.diag.warningMask & ~BR_WARN_OWNED_MASK);
+    TEST_ASSERT_EQUAL_UINT(1, countType(f.sink, BR_EVENT_DIAG_WARNING));
+    TEST_ASSERT_EQUAL_UINT(1, countEvents(f.sink, BR_EVENT_DIAG_WARNING, 0x1000 + 0x40 + 0 * 2 + 1));
+    for (size_t i = 0; i < f.sink.count(); ++i) {
+        if (f.sink.at(i).type == BR_EVENT_DIAG_WARNING) {
+            TEST_ASSERT_EQUAL_FLOAT(0.0f, f.sink.at(i).value);
+            TEST_ASSERT_EQUAL_FLOAT(1.0f, f.sink.at(i).aux);
+            TEST_ASSERT_EQUAL_INT(static_cast<int>(EventReason::Logic), static_cast<int>(f.sink.at(i).reason));
+        }
+    }
+    f.run(raisedAt, raisedAt + 10000);
+    TEST_ASSERT_EQUAL_UINT(1, countEvents(f.sink, BR_EVENT_DIAG_WARNING, warnSrc(BR_WARN_B1, true)));
+
+    f.setOk(BR_SENSOR_T6, 42.0f);   // T6 rose by 2 C: B1 clears
+    f.step(raisedAt + 11000);
+    TEST_ASSERT_EQUAL_HEX32(0, f.state.diag.warningMask & (1u << BR_WARN_B1));
+    TEST_ASSERT_EQUAL_HEX32(0xABCD0100u, f.state.diag.warningMask & ~BR_WARN_OWNED_MASK);
+    const uint16_t clearSrc = warnSrc(BR_WARN_B1, false);
+    TEST_ASSERT_EQUAL_HEX16(0x1040, clearSrc);
+    TEST_ASSERT_NOT_EQUAL(warnSrc(BR_WARN_B1, true), clearSrc);
+    TEST_ASSERT_EQUAL_UINT(1, countEvents(f.sink, BR_EVENT_DIAG_WARNING, clearSrc));
+    const RecordingEventSink::Record* last = nullptr;
+    for (size_t i = 0; i < f.sink.count(); ++i) {
+        if (f.sink.at(i).type == BR_EVENT_DIAG_WARNING) {
+            last = &f.sink.at(i);
+        }
+    }
+    TEST_ASSERT_NOT_NULL(last);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, last->value);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, last->aux);
+}
+
+// NOTE: RecordingEventSink has no rate limiter, so both raises are counted here.
+// The real EventLog drops the second raise (same type+source within 60 s) -- see
+// test_diag_reraise_within_60s_rate_limited_in_real_log for the stored sequence.
+static void test_diag_disable_b1_clears_next_tick_and_logs() {
+    Fixture f;
+    setupB1(f);
+    const uint64_t onAt = runUntilP3Actual(f, 0);
+    const uint64_t raisedAt = runUntilB1(f, onAt, onAt + 5 * 60000ull);
+    f.setSetting(BR_KEY_B1_EN, 0, raisedAt + 500);
+    f.step(raisedAt + 1000);
+    TEST_ASSERT_EQUAL_HEX32(0, f.state.diag.warningMask & 1u);
+    TEST_ASSERT_EQUAL_UINT(1, countEvents(f.sink, BR_EVENT_DIAG_WARNING, warnSrc(BR_WARN_B1, false)));
+    f.setSetting(BR_KEY_B1_EN, 1, raisedAt + 1500);   // D4: re-enable keeps the ON-edge baseline
+    f.step(raisedAt + 2000);
+    TEST_ASSERT_EQUAL_HEX32(1u, f.state.diag.warningMask & 1u);
+    TEST_ASSERT_EQUAL_UINT(2, countEvents(f.sink, BR_EVENT_DIAG_WARNING, warnSrc(BR_WARN_B1, true)));
+}
+
+// Review-4 carry-in: with the REAL EventLog (60 s type+source limiter) a
+// raise -> clear -> raise of B1 within 60 s stores only raise + clear; the log's
+// last B1 entry reads "cleared" while the bit is set (mask/HA are authoritative).
+// After the window a new edge is stored again. D7 semantics are unchanged.
+static void test_diag_reraise_within_60s_rate_limited_in_real_log() {
+    MemoryKvStore cfgKv, logKv;
+    FakeClock clock;
+    EventLog log(logKv, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgKv, log);
+    config.begin(BOILER_ROOM_SCHEMA, 0);
+    RelayBank relays;
+    relays.configure(BOILER_ROOM_RELAYS, 3, 0);
+    relays.setLockMs(LOCK_MS);
+    CommonState state{};
+    BoilerRoomStatus status{};
+    state.sensors.count = 6;
+    const float temps[BR_SENSOR_COUNT] = {75.0f, 50.0f, 70.0f, 55.0f, 50.0f, 40.0f};   // B1: T3 70 / T6 40
+    for (uint8_t i = 0; i < BR_SENSOR_COUNT; ++i) {
+        state.sensors.sensor[i].state = SensorState::Ok;
+        state.sensors.sensor[i].tempC = temps[i];
+        state.sensors.sensor[i].assigned = true;
+    }
+    BoilerRoomRuntime rt(state, status, config, log, relays);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BoilerRoomRuntimeStatus::Ok), static_cast<int>(rt.begin(0)));
+    TEST_ASSERT_TRUE(rt.diagReady());
+    const size_t en = static_cast<size_t>(config.indexOf(BR_KEY_B1_EN));
+    auto step = [&](uint64_t t) {
+        clock.mono = t;
+        rt.tick(t);
+        relays.update(t, log);
+    };
+    uint64_t t = 0;
+    while ((state.diag.warningMask & 1u) == 0) {
+        t += 1000;
+        step(t);
+        TEST_ASSERT_TRUE_MESSAGE(t < 10 * 60000ull, "B1 never raised");
+    }
+    const uint64_t raisedAt = t;
+    clock.mono = raisedAt + 500;
+    config.setNumber(en, 0, EventReason::Web, raisedAt + 500);
+    step(raisedAt + 1000);   // clear: accepted (distinct source)
+    clock.mono = raisedAt + 1500;
+    config.setNumber(en, 1, EventReason::Web, raisedAt + 1500);
+    step(raisedAt + 2000);   // re-raise within 60 s of the first raise: rate-limited
+    TEST_ASSERT_EQUAL_HEX32(1u, state.diag.warningMask & 1u);
+
+    // Stored B1 sequence, oldest first.
+    uint16_t src[8];
+    size_t n = 0;
+    for (size_t i = log.count(); i > 0 && n < 8; --i) {
+        const EventEntry* e = log.newest(i - 1);
+        if (e != nullptr && e->type == BR_EVENT_DIAG_WARNING && e->value == 0.0f) {
+            src[n++] = e->source;
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT(2, n);
+    TEST_ASSERT_EQUAL_HEX16(warnSrc(BR_WARN_B1, true), src[0]);
+    TEST_ASSERT_EQUAL_HEX16(warnSrc(BR_WARN_B1, false), src[1]);   // last entry reads "cleared"
+
+    // Past the window a new clear/raise pair is stored again.
+    const uint64_t later = raisedAt + 70000;
+    for (uint64_t x = raisedAt + 3000; x < later; x += 1000) {
+        step(x);
+    }
+    clock.mono = later;
+    config.setNumber(en, 0, EventReason::Web, later);
+    step(later + 1000);
+    clock.mono = later + 1500;
+    config.setNumber(en, 1, EventReason::Web, later + 1500);
+    step(later + 2000);
+    TEST_ASSERT_EQUAL_HEX32(1u, state.diag.warningMask & 1u);
+    const EventEntry* last = nullptr;
+    size_t b1 = 0;
+    for (size_t i = 0; i < log.count(); ++i) {
+        const EventEntry* e = log.newest(i);
+        if (e != nullptr && e->type == BR_EVENT_DIAG_WARNING && e->value == 0.0f) {
+            if (last == nullptr) {
+                last = e;
+            }
+            ++b1;
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT(4, b1);
+    TEST_ASSERT_NOT_NULL(last);
+    TEST_ASSERT_EQUAL_HEX16(warnSrc(BR_WARN_B1, true), last->source);
+}
+
+// All three checks would fire in this scenario (T1 hot, T2/T3/T6 flat).
+static void setupAllWarnings(Fixture& f) {
+    f.setOk(BR_SENSOR_T1, 80.0f);
+    f.setOk(BR_SENSOR_T2, 50.0f);
+    f.setOk(BR_SENSOR_T3, 62.0f);
+    f.setOk(BR_SENSOR_T6, 40.0f);
+    f.sink.clear();
+}
+
+static void assertSameControl(const Fixture& a, const Fixture& b, uint64_t t) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "control diverged at t=%llu", static_cast<unsigned long long>(t));
+    for (uint8_t ch = 0; ch < BR_PUMP_COUNT; ++ch) {
+        TEST_ASSERT_EQUAL_MESSAGE(a.relays.requested(ch), b.relays.requested(ch), msg);
+        TEST_ASSERT_EQUAL_MESSAGE(a.relays.actual(ch), b.relays.actual(ch), msg);
+        TEST_ASSERT_EQUAL_MESSAGE(a.relays.safetyActive(ch), b.relays.safetyActive(ch), msg);
+        TEST_ASSERT_EQUAL_MESSAGE(a.status.pump[ch].on, b.status.pump[ch].on, msg);
+        TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(a.status.pump[ch].reason), static_cast<int>(b.status.pump[ch].reason),
+            msg);
+    }
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(a.state.alarms.activeMask, b.state.alarms.activeMask, msg);
+    TEST_ASSERT_EQUAL_MESSAGE(static_cast<int>(a.status.p3Mode), static_cast<int>(b.status.p3Mode), msg);
+    TEST_ASSERT_EQUAL_MESSAGE(a.status.ready, b.status.ready, msg);
+}
+
+static void test_diag_does_not_change_control() {
+    Fixture on;                  // diag table present, all enables on (defaults)
+    Fixture off;                 // all enables off
+    Fixture none(SCHEMA_NO_DIAG);   // no diag table at all
+    off.setSetting(BR_KEY_B1_EN, 0);
+    off.setSetting(BR_KEY_B3_EN, 0);
+    off.setSetting(BR_KEY_B6_EN, 0);
+    setupAllWarnings(on);
+    setupAllWarnings(off);
+    setupAllWarnings(none);
+    uint32_t seen = 0;
+    for (uint64_t t = 1000; t <= 10 * 60000ull; t += 1000) {
+        if (t == 7 * 60000ull) {   // mid-run changes, applied identically
+            on.setOk(BR_SENSOR_T1, 92.0f);
+            off.setOk(BR_SENSOR_T1, 92.0f);
+            none.setOk(BR_SENSOR_T1, 92.0f);
+        }
+        on.step(t);
+        off.step(t);
+        none.step(t);
+        seen |= on.state.diag.warningMask;
+        assertSameControl(on, off, t);
+        assertSameControl(on, none, t);
+        TEST_ASSERT_EQUAL_HEX32(0, off.state.diag.warningMask);
+        TEST_ASSERT_EQUAL_HEX32(0, none.state.diag.warningMask);
+    }
+    TEST_ASSERT_TRUE(on.relays.actual(BR_PUMP_P3));
+    TEST_ASSERT_TRUE_MESSAGE((seen & (1u << BR_WARN_B1)) != 0, "the diag run must actually raise B1");
+    TEST_ASSERT_TRUE_MESSAGE((seen & (1u << BR_WARN_B6)) != 0, "the diag run must actually raise B6");
+    TEST_ASSERT_EQUAL_UINT(0, countType(off.sink, BR_EVENT_DIAG_WARNING));
+    TEST_ASSERT_EQUAL_UINT(0, countType(none.sink, BR_EVENT_DIAG_WARNING));
+}
+
+// D2: a missing diag table only disables the diagnostics -- control stays ready.
+static void test_diag_table_missing_keeps_control_ready() {
+    MemoryKvStore kv;
+    RecordingEventSink sink;
+    ConfigEngine config{kv, sink};
+    RelayBank relays;
+    CommonState state{};
+    BoilerRoomStatus status{};
+    BoilerRoomRuntime rt{state, status, config, sink, relays};
+    config.begin(SCHEMA_NO_DIAG, 0);
+    relays.configure(BOILER_ROOM_RELAYS, 3, 0);
+    relays.setLockMs(LOCK_MS);
+    sink.clear();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BoilerRoomRuntimeStatus::Ok), static_cast<int>(rt.begin(0)));
+    TEST_ASSERT_TRUE(rt.ready());
+    TEST_ASSERT_FALSE(rt.diagReady());
+    TEST_ASSERT_EQUAL_UINT(1, countType(sink, toU16(EventType::DiagnosticWarning)));
+    TEST_ASSERT_EQUAL_UINT(1, countEvents(sink, toU16(EventType::DiagnosticWarning), DIAG_MISSING_SRC));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, sink.at(0).value);   // BrDiagKey::B1En failed first
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(EventReason::Logic), static_cast<int>(sink.at(0).reason));
+    TEST_ASSERT_NOT_EQUAL(DIAG_MISSING_SRC,
+        static_cast<uint16_t>(EVENT_SOURCE_DIAG_BASE + BR_DIAG_CODE_SETTING_MISSING));
+
+    state.sensors.count = 6;
+    const float temps[BR_SENSOR_COUNT] = {80.0f, 50.0f, 62.0f, 55.0f, 50.0f, 40.0f};
+    for (uint8_t i = 0; i < BR_SENSOR_COUNT; ++i) {
+        state.sensors.sensor[i].state = SensorState::Ok;
+        state.sensors.sensor[i].tempC = temps[i];
+        state.sensors.sensor[i].assigned = true;
+    }
+    state.diag.warningMask = 0x00000107u;   // stale owned bits 0..2 are cleared, bit 8 kept
+    for (uint64_t t = 1000; t <= 10 * 60000ull; t += 1000) {
+        rt.tick(t);
+        relays.update(t, sink);
+        TEST_ASSERT_TRUE(status.ready);
+        TEST_ASSERT_EQUAL_HEX32(0x00000100u, state.diag.warningMask);
+    }
+    TEST_ASSERT_FALSE(relays.safetyActive(BR_PUMP_P1));   // no not-ready P1 force
+    TEST_ASSERT_TRUE(relays.actual(BR_PUMP_P3));          // control runs: P3 NORMAL
+    TEST_ASSERT_EQUAL_UINT(0, countType(sink, BR_EVENT_DIAG_WARNING));
+    TEST_ASSERT_EQUAL_UINT(1, countType(sink, toU16(EventType::DiagnosticWarning)));
+}
+
+static void test_diag_key_mistyped_keeps_control_ready() {
+    Fixture f(SCHEMA_MISTYPED_DIAG);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BoilerRoomRuntimeStatus::Ok), static_cast<int>(f.runtimeStatus));
+    TEST_ASSERT_TRUE(f.rt.ready());
+    TEST_ASSERT_FALSE(f.rt.diagReady());
+    setupAllWarnings(f);
+    f.run(0, 10 * 60000ull);
+    TEST_ASSERT_TRUE(f.status.ready);
+    TEST_ASSERT_FALSE(f.relays.safetyActive(BR_PUMP_P1));
+    TEST_ASSERT_EQUAL_HEX32(0, f.state.diag.warningMask);
+    TEST_ASSERT_EQUAL_UINT(0, countType(f.sink, BR_EVENT_DIAG_WARNING));
+}
+
+// Not ready (a control key is missing): only the owned warning bits 0..7 are
+// cleared (bits 8..31 kept) and no warning events are logged, since nothing was
+// ever published. (A ready -> not-ready transition cannot happen today: begin()
+// runs once, so the "clear logged once" path in tick() is defensive only.)
+static void test_diag_not_ready_clears_owned_bits() {
+    Fixture f(TEST_SCHEMA_A_V1);
+    TEST_ASSERT_FALSE(f.rt.ready());
+    TEST_ASSERT_FALSE(f.rt.diagReady());
+    f.state.diag.warningMask = 0xFF0000FFu;
+    f.run(0, 5000);
+    TEST_ASSERT_EQUAL_HEX32(0xFF000000u, f.state.diag.warningMask);
+    TEST_ASSERT_EQUAL_UINT(0, countType(f.sink, BR_EVENT_DIAG_WARNING));   // nothing was published
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_begin_ok_on_real_schema);
@@ -895,5 +1227,12 @@ int main(int, char**) {
     RUN_TEST(test_ota_inhibit_keeps_all_relays_off_during_overheat);
     RUN_TEST(test_setting_change_takes_effect_next_tick);
     RUN_TEST(test_status_fields_scripted_scenario);
+    RUN_TEST(test_diag_b1_raises_after_min_on_and_clears_on_rise);
+    RUN_TEST(test_diag_disable_b1_clears_next_tick_and_logs);
+    RUN_TEST(test_diag_reraise_within_60s_rate_limited_in_real_log);
+    RUN_TEST(test_diag_does_not_change_control);
+    RUN_TEST(test_diag_table_missing_keeps_control_ready);
+    RUN_TEST(test_diag_key_mistyped_keeps_control_ready);
+    RUN_TEST(test_diag_not_ready_clears_owned_bits);
     return UNITY_END();
 }

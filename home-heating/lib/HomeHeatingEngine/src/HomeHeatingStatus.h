@@ -1,11 +1,24 @@
 #pragma once
 #include <stdint.h>
 #include "HomeHeatingTypes.h"
+#include "K1StepTest.h"
 
 // The home-heating controller AppState slice (stage 08, C10/D21). A separate
 // POD beside CommonState, written only by HomeHeatingRuntime::tick on the loop
 // task; the views (web "ctl", OLED pages, HA custom entities) only read it.
 // Value-initialise on construction: `HomeHeatingStatus status{};`.
+
+// Stage 09 (C15): the K1 step-test panel state.
+struct HomeHeatingStepStatus {
+    StepBlock block;            // why a start is blocked now (None = startable)
+    bool running;
+    uint32_t elapsedS;
+    uint32_t pulseS;            // pulse of the running / last test
+    bool deadSeen;
+    float deadTimeS;            // live dead time once seen
+    StepTestResult last;        // last finished test (outcome None until one ends)
+};
+
 struct HomeHeatingStatus {
     bool ready;
     bool heatingEnabled;
@@ -24,4 +37,13 @@ struct HomeHeatingStatus {
     FailMode fail;
     bool noNeed;
     uint32_t alarmMask;         // controller bits
+    // ---- stage 09 (C15), appended; the fields above are unchanged ----
+    bool h2ErrValid;            // H2 state Ok && heatingEnabled
+    float h2ErrC;               // H2 - h2Set
+    int8_t lastPulseDir;        // +1 open / -1 close / 0 none (FF / feedback / step test only, D11)
+    float lastPulseS;           // commanded length (A8)
+    uint32_t pulsesToday;       // K1 motor runs, local day (A9)
+    bool pulsesYesterdayValid;  // false until the first local-day rollover
+    uint32_t pulsesYesterday;
+    HomeHeatingStepStatus step;
 };

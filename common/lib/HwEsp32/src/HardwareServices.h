@@ -24,13 +24,18 @@ public:
 
     // ~1 s: builds LocalTimeInfo from time(nullptr)/localtime_r (TZ already
     // applied by TimeService) when state.time.valid, else NO_LOCAL_TIME, then
-    // HwRuntime::tick().
+    // HwRuntime::tick(). The LocalTimeInfo is also kept for localTime().
     void tick();
 
     // ~100 ms: HwRuntime::fastTick().
     void fastTick();
 
     HwRuntime& runtime() { return _runtime; }
+
+    // Stage 09 (D10): the LocalTimeInfo built by the last tick() (NO_LOCAL_TIME
+    // before the first tick or while time is not valid). Home-heating passes it
+    // to its controller for the K1 run counter day rollover.
+    const LocalTimeInfo& localTime() const { return _local; }
 
 private:
     CommonState& _state;
@@ -40,4 +45,5 @@ private:
     Pcf8574RelayPort _port;
     DallasOneWireBus _bus;
     HwRuntime _runtime;
+    LocalTimeInfo _local = NO_LOCAL_TIME;
 };

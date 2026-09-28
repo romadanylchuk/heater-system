@@ -12,6 +12,7 @@
 #include <HaDiscovery.h>
 #include <HaEntityRegistry.h>
 #include <HomeHeatingAlarms.h>
+#include <HomeHeatingDiagnostics.h>
 #include <HomeHeatingHa.h>
 #include <HomeHeatingJson.h>
 #include <HomeHeatingPages.h>
@@ -126,7 +127,7 @@ static void test_ctl_json_full_shape() {
     expectBoolKey(ctl, "en", true);
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"set\":40,"));   // JsonOut trims a zero fraction
     TEST_ASSERT_EQUAL_FLOAT(40.0f, ctl["set"].as<float>());
-    TEST_ASSERT_EQUAL_UINT32(8, ctl.size());
+    TEST_ASSERT_EQUAL_UINT32(10, ctl.size());   // stage 09 (C15): + "tu", "st"
 
     JsonObjectConst p4 = ctl["p4"].as<JsonObjectConst>();
     expectBoolKey(p4, "on", true);
@@ -289,6 +290,26 @@ static void test_ctl_json_worst_case_fits_state_cap() {
     st.fail = FailMode::Multi;                  // "multi"
     st.noNeed = true;
     st.alarmMask = HH_ALARM_OWNED_MASK;
+    // Stage 09 (C15): "tu" + "st" at their widest -- every nullable present as a
+    // number, max counters, the longest block key, a Result with all numbers.
+    st.h2ErrValid = true;
+    st.h2ErrC = -99999.9f;
+    st.lastPulseDir = -1;
+    st.lastPulseS = -99999.9f;
+    st.pulsesToday = UINT32_MAX;
+    st.pulsesYesterdayValid = true;
+    st.pulsesYesterday = UINT32_MAX;
+    st.step.block = StepBlock::K1Headroom;     // "k1_headroom" (11, the longest with "unavailable"/"h3_unsteady")
+    st.step.running = true;
+    st.step.elapsedS = UINT32_MAX;
+    st.step.pulseS = UINT32_MAX;
+    st.step.deadSeen = true;
+    st.step.deadTimeS = 99999.9f;
+    st.step.last.outcome = StepOutcome::Result;
+    st.step.last.deadTimeS = 99999.9f;
+    st.step.last.responseCps = -9999.999f;
+    st.step.last.pulseS = UINT32_MAX;
+    st.step.last.suggest = {true, UINT32_MAX, -99999.9f};
 
     static char buf[STATE_CAP];
     const WebJsonContext c{"home-heating", &HOME_HEATING_HW, fmtWorst, nullptr, homeHeatingStateJson, &st};
@@ -303,6 +324,159 @@ static void test_ctl_json_worst_case_fits_state_cap() {
     TEST_ASSERT_EQUAL_STRING("multi_fault_off", doc["ctl"]["p4"]["r"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("failpos_fixed", doc["ctl"]["k1"]["m"].as<const char*>());
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, doc["ctl"]["p4"]["dlyS"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, doc["ctl"]["tu"]["pt"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, doc["ctl"]["tu"]["py"].as<uint32_t>());
+    TEST_ASSERT_EQUAL_STRING("k1_headroom", doc["ctl"]["st"]["blk"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, doc["ctl"]["st"]["res"]["p"].as<uint32_t>());
+    TEST_ASSERT_TRUE(doc["ctl"]["st"]["res"]["r"].is<float>());
+
+    // The longest aborted shape ("aborted" + "heating_off" + a dead time) is shorter
+    // than the Result above; it fits too.
+    st.step.last.outcome = StepOutcome::Aborted;
+    st.step.last.abort = StepAbort::HeatingOff;
+    st.step.last.suggest.valid = false;
+    const size_t nAborted = buildStateJson(s, c, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(nAborted > 0 && nAborted <= n);
+}
+
+// ---- stage 09 (C15): "tu" + "st" ------------------------------------------------
+
+static HomeHeatingStatus tuningStatus() {
+    HomeHeatingStatus st = sampleStatus();
+    st.h2ErrValid = true;
+    st.h2ErrC = -0.44f;
+    st.lastPulseDir = 1;
+    st.lastPulseS = 4.5f;
+    st.pulsesToday = 12;
+    st.pulsesYesterdayValid = true;
+    st.pulsesYesterday = 7;
+    st.step.block = StepBlock::P4Off;
+    st.step.running = false;
+    st.step.elapsedS = 0;
+    st.step.pulseS = 10;
+    st.step.last.outcome = StepOutcome::Result;
+    st.step.last.abort = StepAbort::None;
+    st.step.last.deadTimeS = 20.0f;
+    st.step.last.responseCps = 0.25f;
+    st.step.last.pulseS = 10;
+    st.step.last.suggest = {true, 30, 2.0f};
+    return st;
+}
+
+static void test_ctl_json_tuning_and_step_shape() {
+    static char buf[STATE_CAP];
+    CommonState s = sampleState();
+    HomeHeatingStatus st = tuningStatus();
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc;
+    JsonObjectConst ctl = parseCtl(doc, buf);
+    // Order: after "nn".
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"nn\":false,\"tu\":{"));
+
+    JsonObjectConst tu = ctl["tu"].as<JsonObjectConst>();
+    TEST_ASSERT_EQUAL_UINT32(5, tu.size());
+    TEST_ASSERT_TRUE(tu["err"].is<float>());
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"err\":-0.4,"));   // 1 decimal
+    expectIntKey(tu, "lpd", 1);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"lps\":4.5,"));
+    expectIntKey(tu, "pt", 12);
+    expectIntKey(tu, "py", 7);
+
+    JsonObjectConst stp = ctl["st"].as<JsonObjectConst>();
+    TEST_ASSERT_EQUAL_UINT32(6, stp.size());
+    expectBoolKey(stp, "run", false);
+    expectStrKey(stp, "blk", "p4_off");
+    expectIntKey(stp, "el", 0);
+    expectIntKey(stp, "ps", 10);
+    expectNullKey(stp, "dt");                              // not running: not seen
+    JsonObjectConst res = stp["res"].as<JsonObjectConst>();
+    TEST_ASSERT_FALSE(res.isNull());
+    TEST_ASSERT_EQUAL_UINT32(6, res.size());
+    expectStrKey(res, "o", "result");
+    expectNullKey(res, "ab");
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"res\":{\"o\":\"result\",\"ab\":null,\"dt\":20,\"r\":0.25,\"p\":30,\"g\":2}"));
+    TEST_ASSERT_EQUAL_FLOAT(0.25f, res["r"].as<float>());
+    expectIntKey(res, "p", 30);
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, res["g"].as<float>());
+
+    // Running: live dead time once seen (1 decimal), direction close, 3-decimal r.
+    st.step.running = true;
+    st.step.block = StepBlock::Running;
+    st.step.elapsedS = 42;
+    st.step.deadSeen = true;
+    st.step.deadTimeS = 18.26f;
+    st.lastPulseDir = -1;
+    st.step.last.responseCps = 0.1234f;
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc2;
+    JsonObjectConst ctl2 = parseCtl(doc2, buf);
+    expectBoolKey(ctl2["st"], "run", true);
+    expectStrKey(ctl2["st"], "blk", "running");
+    expectIntKey(ctl2["st"], "el", 42);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"ps\":10,\"dt\":18.3,"));
+    expectIntKey(ctl2["tu"], "lpd", -1);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"r\":0.123,"));
+}
+
+static void test_ctl_json_tuning_and_step_nulls() {
+    static char buf[STATE_CAP];
+    CommonState s = sampleState();
+    HomeHeatingStatus st = tuningStatus();
+    st.h2ErrValid = false;                 // err null when invalid
+    st.pulsesYesterdayValid = false;       // py null before the first rollover
+    st.lastPulseDir = 0;
+    st.lastPulseS = 0.0f;
+    st.step.last = StepTestResult{};       // res null while no outcome
+    st.step.block = StepBlock::Unavailable;
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc;
+    JsonObjectConst ctl = parseCtl(doc, buf);
+    expectNullKey(ctl["tu"], "err");
+    expectNullKey(ctl["tu"], "py");
+    expectIntKey(ctl["tu"], "lpd", 0);
+    expectIntKey(ctl["tu"], "lps", 0);
+    expectStrKey(ctl["st"], "blk", "unavailable");
+    expectNullKey(ctl["st"], "res");
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"res\":null}"));   // present as null
+
+    // NoResponse: dead time 0 = not seen -> null; r / p / g null.
+    st.step.last.outcome = StepOutcome::NoResponse;
+    st.step.last.deadTimeS = 0.0f;
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc2;
+    JsonObjectConst res = parseCtl(doc2, buf)["st"]["res"].as<JsonObjectConst>();
+    expectStrKey(res, "o", "no_response");
+    expectNullKey(res, "ab");
+    expectNullKey(res, "dt");
+    expectNullKey(res, "r");
+    expectNullKey(res, "p");
+    expectNullKey(res, "g");
+
+    // Aborted after the dead time was seen: ab present, dt kept, r / p / g null.
+    st.step.last.outcome = StepOutcome::Aborted;
+    st.step.last.abort = StepAbort::Cancel;
+    st.step.last.deadTimeS = 12.0f;
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc3;
+    JsonObjectConst res3 = parseCtl(doc3, buf)["st"]["res"].as<JsonObjectConst>();
+    expectStrKey(res3, "o", "aborted");
+    expectStrKey(res3, "ab", "cancel");
+    expectIntKey(res3, "dt", 12);
+    expectNullKey(res3, "r");
+    expectNullKey(res3, "p");
+    expectNullKey(res3, "g");
+
+    // A Result without a valid suggestion: r present, p / g null.
+    st.step.last.outcome = StepOutcome::Result;
+    st.step.last.responseCps = 0.5f;
+    st.step.last.suggest = {false, 0, 0.0f};
+    TEST_ASSERT_TRUE(buildState(s, &st, buf, sizeof(buf)) > 0);
+    JsonDocument doc4;
+    JsonObjectConst res4 = parseCtl(doc4, buf)["st"]["res"].as<JsonObjectConst>();
+    expectNullKey(res4, "ab");
+    TEST_ASSERT_EQUAL_FLOAT(0.5f, res4["r"].as<float>());
+    expectNullKey(res4, "p");
+    expectNullKey(res4, "g");
 }
 
 // ---- Pages --------------------------------------------------------------------
@@ -495,7 +669,7 @@ struct HaFixture {
     HaRegistryStatus begin() {
         TEST_ASSERT_TRUE(log.begin());
         TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
-        return reg.build(config, HOME_HEATING_HW, HOME_HEATING_HA_ENTITIES, 16);
+        return reg.build(config, HOME_HEATING_HW, HOME_HEATING_HA_ENTITIES, HOME_HEATING_HA_ENTITY_COUNT);
     }
     int find(const char* key) const { return reg.findByKey(key, strlen(key)); }
     // formatState's availability; the text is left in out.
@@ -540,6 +714,13 @@ static const ExpectedEntity EXPECTED[] = {
     {"alarm_h2_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
     {"alarm_h3_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
     {"alarm_h4_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
+    // stage 09 (C15), appended
+    {"warn_p4_no_flow", HaComponent::BinarySensor, nullptr, "problem", nullptr, nullptr},
+    {"h2_error", HaComponent::Sensor, "\xC2\xB0" "C", nullptr, "measurement", nullptr},
+    {"k1_last_pulse", HaComponent::Sensor, "s", nullptr, "measurement", nullptr},
+    {"k1_last_pulse_dir", HaComponent::Sensor, nullptr, nullptr, nullptr, "diagnostic"},
+    {"k1_pulses_today", HaComponent::Sensor, nullptr, nullptr, "total_increasing", "diagnostic"},
+    {"k1_pulses_yesterday", HaComponent::Sensor, nullptr, nullptr, nullptr, "diagnostic"},
 };
 constexpr size_t FIRST_ALARM_ENTITY = 7;
 static const uint8_t EXPECTED_ALARM_BIT[] = {0, 1, 2, 3, 4, 8, 9, 10, 11};   // EXPECTED[7..]
@@ -558,7 +739,7 @@ static void test_ha_registry_builds_with_custom_entities() {
     HaFixture fx;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok), static_cast<int>(fx.begin()));
     TEST_ASSERT_TRUE(fx.reg.count() <= HA_MAX_ENTITIES);
-    TEST_ASSERT_EQUAL_UINT32(16, HOME_HEATING_HA_ENTITY_COUNT);
+    TEST_ASSERT_EQUAL_UINT32(22, HOME_HEATING_HA_ENTITY_COUNT);   // stage 09 (C15): 16 -> 22
     TEST_ASSERT_EQUAL_UINT32(sizeof(EXPECTED) / sizeof(EXPECTED[0]), HOME_HEATING_HA_ENTITY_COUNT);
     for (size_t a = 0; a < HOME_HEATING_HA_ENTITY_COUNT; ++a) {
         TEST_ASSERT_EQUAL_STRING(EXPECTED[a].key, HOME_HEATING_HA_ENTITIES[a].key);   // order is binding too
@@ -691,12 +872,68 @@ static void test_ha_temp_h3_unavailable_on_fault() {
     g_ha = nullptr;
 }
 
+// Stage 09 (C15): the 6 appended entities.
+static void test_ha_stage09_entities() {
+    HaFixture fx;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok), static_cast<int>(fx.begin()));
+    g_ha = &fx;
+    CommonState s = sampleState();
+
+    // warn_p4_no_flow reads CommonState only: available while unbound, follows bit 0.
+    bindHomeHeatingHaStatus(nullptr);
+    s.diag.warningMask = 0;
+    expectHaState("warn_p4_no_flow", s, true, "OFF");
+    s.diag.warningMask = 1u << HH_WARN_H1;
+    expectHaState("warn_p4_no_flow", s, true, "ON");
+    s.diag.warningMask = ~(1u << HH_WARN_H1);
+    expectHaState("warn_p4_no_flow", s, true, "OFF");
+
+    const char* statusKeys[] = {"h2_error", "k1_last_pulse", "k1_last_pulse_dir", "k1_pulses_today",
+        "k1_pulses_yesterday"};
+    for (const char* k : statusKeys) expectHaState(k, s, false, "None");   // unbound
+    HomeHeatingStatus st = sampleStatus();
+    st.h2ErrValid = true;
+    st.h2ErrC = -0.44f;
+    st.lastPulseDir = 1;
+    st.lastPulseS = 4.5f;
+    st.pulsesToday = 12;
+    st.pulsesYesterdayValid = true;
+    st.pulsesYesterday = 7;
+    st.ready = false;
+    bindHomeHeatingHaStatus(&st);
+    for (const char* k : statusKeys) expectHaState(k, s, false, "None");   // not ready
+
+    st.ready = true;
+    expectHaState("h2_error", s, true, "-0.4");
+    expectHaState("k1_last_pulse", s, true, "4.5");
+    expectHaState("k1_last_pulse_dir", s, true, "open");
+    expectHaState("k1_pulses_today", s, true, "12");
+    expectHaState("k1_pulses_yesterday", s, true, "7");
+
+    st.lastPulseDir = -1;
+    expectHaState("k1_last_pulse_dir", s, true, "close");
+    st.pulsesToday = UINT32_MAX;
+    expectHaState("k1_pulses_today", s, true, "4294967295");
+
+    // h2_error unavailable when invalid; k1_last_pulse while dir 0; yesterday until valid.
+    st.h2ErrValid = false;
+    expectHaState("h2_error", s, false, "None");
+    st.lastPulseDir = 0;
+    expectHaState("k1_last_pulse", s, false, "None");
+    expectHaState("k1_last_pulse_dir", s, true, "none");
+    st.pulsesYesterdayValid = false;
+    expectHaState("k1_pulses_yesterday", s, false, "None");
+    g_ha = nullptr;
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_ctl_json_full_shape);
     RUN_TEST(test_ctl_json_nulls_modes_and_flags);
     RUN_TEST(test_ctl_json_null_or_not_ready_is_ok_false);
     RUN_TEST(test_ctl_json_worst_case_fits_state_cap);
+    RUN_TEST(test_ctl_json_tuning_and_step_shape);
+    RUN_TEST(test_ctl_json_tuning_and_step_nulls);
     RUN_TEST(test_page_heating_normal);
     RUN_TEST(test_page_heating_recal_unknown_and_actual_relay);
     RUN_TEST(test_page_heating_fault_temps_and_fail_row);
@@ -708,5 +945,6 @@ int main() {
     RUN_TEST(test_ha_status_entities_unbound_not_ready_and_bound);
     RUN_TEST(test_ha_alarm_entities_follow_mask_bits);
     RUN_TEST(test_ha_temp_h3_unavailable_on_fault);
+    RUN_TEST(test_ha_stage09_entities);
     return UNITY_END();
 }

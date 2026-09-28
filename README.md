@@ -16,7 +16,7 @@ heater-system/
 │   │   ├── RelayBoot/          Arduino-only: writes the relay all-OFF byte at boot
 │   │   ├── CoreEngine/         pure, native-testable firmware core (see "Core engine" below)
 │   │   ├── CoreEsp32/          ESP32-only adapters for CoreEngine (NVS, RTC, SNTP, watchdog, DI1)
-│   │   ├── HwEngine/           pure, native-testable relay/K1/DS18B20/anti-seize logic (see "Hardware services" below)
+│   │   ├── HwEngine/           pure, native-testable relay/K1/DS18B20/anti-seize logic + SensorHistory (see "Hardware services" below)
 │   │   ├── HwEsp32/            ESP32-only adapters for HwEngine (PCF8574, OneWire/DallasTemperature)
 │   │   ├── NetEngine/          pure, native-testable Wi-Fi/MQTT/HA/OTA logic (see "Connectivity" below)
 │   │   ├── NetEsp32/           ESP32-only Wi-Fi/mDNS/MQTT/OTA adapters, web server, ConnectivityServices
@@ -25,6 +25,7 @@ heater-system/
 │   ├── web/                    shared web UI sources (style.css, lang/); assembled into <project>/data/
 │   ├── scripts/                PlatformIO pre-scripts (fw_version.py, web_assemble.py)
 │   └── test/                   CommonSuite.h — native tests shared by both projects
+├── docs/                       owner docs: HA "no need" automation YAML, K1 tuning guide (k1-tuning-guide.md)
 ├── boiler-room/                PlatformIO project (src/, web/, test/)
 │   └── lib/BoilerRoomEngine/   pure, native-testable pump controller + views (see "Boiler-room controller" below)
 └── home-heating/               PlatformIO project (src/, web/, test/)
@@ -496,6 +497,7 @@ Write routes answer 202 `{"ok":true,"id":N}`; poll `GET /api/cmd?id=N` for the r
 | `POST /api/backup/import` | W | raw `application/json` body, at most 8192 B (413 above) |
 | `POST /api/factory-reset` | W | form `confirm=RESET` |
 | `POST /api/ota/grant` | W | `pass`: 200 `{ttlS}`, 401, 429 |
+| `POST /api/project/cmd` | W | form `op` (1–255): project command (home-heating step test, stage 09) |
 | `GET /ota/start?mode=fr\|fs`, `POST /ota/upload` | O | ElegantOTA backend (409 during espota) |
 | `GET /setup`, `GET /update` | P | rescue page |
 
@@ -1169,6 +1171,206 @@ None of these has been run on a real board yet.
       clipped, and every raised alarm shows its label on the Alarms page.
 - [ ] **Watchdog.** Several hours of running with pages rotating and HA connected: no watchdog resets, and
       the `debug` loop timing stays well under 100 ms.
+
+## Diagnostics & K1 tuning (stage 09)
+
+Stage 09 adds **pump-response diagnostics** to both controllers and **K1 tuning aids** to home heating. The
+diagnostics only raise **warnings**: they never switch a relay, change a control decision or raise an alarm.
+If their settings table is missing or mistyped, diagnostics (and the step test) are off and control runs
+unchanged (one `DiagnosticWarning`, source `EVENT_SOURCE_DIAG_BASE + 33`, value = the diag key index).
+
+- `SensorHistory` (in `common/lib/HwEngine`, pure) keeps the last 60 min of each sensor at 30 s (NaN for a
+  sample that was not Ok). The step test uses it for its "steady" check.
+- boiler-room: `PumpRiseCheck`, `BoilerRoomDiagSettings`, `BoilerRoomDiagnostics` in `BoilerRoomEngine`, run by
+  `BoilerRoomRuntime` after the control step.
+- home-heating: `P4FlowCheck`, `HomeHeatingDiagSettings`, `HomeHeatingDiagnostics`, `K1PulseCounter` and
+  `K1StepTest` in `HomeHeatingEngine`, run by `HomeHeatingRuntime`.
+- The owner guide for K1 tuning is [`docs/k1-tuning-guide.md`](docs/k1-tuning-guide.md).
+
+### Pump checks (B1, B3, B6, H1)
+
+| Check | Project | Pump | Warns when (all true) | Defaults |
+|-------|---------|------|------------------------|----------|
+| **B1** P3 no flow | boiler-room | P3 | P3 ON ≥ `b1MinOn` min, T3 − T6 > `b1Delta`, and T6 rose less than `b1MinRise` since P3 started | 3 min, 15 °C, 2 °C |
+| **B3** P1 not charging | boiler-room | P1 | P1 ON ≥ `b3MinOn` min, T1 − T3 > `b3Delta`, and T3 rose less than `b3MinRise` since P1 started | 10 min, 10 °C, 1 °C |
+| **B6** P2 no effect | boiler-room | P2 | P2 ON ≥ `b6MinOn` min, T1 − T2 > `b6Delta`, and T2 rose less than `b6MinRise` since P2 started | 5 min, 10 °C, 2 °C |
+| **H1** P4 no flow | home-heating | P4 | P4 ON ≥ `h1MinOn` min, K1 position > `h1K1Min` %, H3 > H1 + `h1Delta`, and H2 − H1 < `h1MinDiff` | 5 min, 30 %, 10 °C, 2 °C |
+
+- **"ON" is the actual relay (A1).** The timer and the baseline start at the relay's actual ON edge (a
+  request delayed by the relay lock does not count). The baseline is snapshotted at that edge. A 30 s
+  anti-seize exercise never reaches a window. Pump OFF → tracking stops; the next ON starts over.
+- **B1/B3/B6 are start-up checks (A2).** "Rose" is measured since the pump started; a pump that stops moving
+  water after it already made the rise is not detected.
+- **H1 is instantaneous (A3):** no rise term; it uses the K1 position estimate and pauses while the estimate is
+  unknown (e.g. during recalibration). In the 30 % fail-safe position it never triggers (30 is not > 30).
+- **Pause on a sensor problem (A4).** While a sensor the check uses (the two temperatures of a B-check, H1–H3
+  for H1) is Failed, Unassigned or Pending-unknown, the check pauses: the warning clears and the timer and
+  baseline reset; the check restarts at recovery. A sensor in its short debounce still reads Ok and does not
+  pause.
+- A warning **auto-clears** as soon as its condition is gone. Disabling a check clears it on the next tick; the
+  check keeps tracking while disabled, so re-enabling it raises at once if the condition still holds.
+
+### Warning bits, events and HA entities
+
+The checks own bits 0–7 of `diag.warningMask` (shown as `"warnings"` in `/api/state` and as amber chips in the
+web header, label `warn.<bit>`); the other bits are left alone.
+
+| Project | Bit | Web label | HA binary sensor (device class `problem`) |
+|---------|-----|-----------|--------------------------------------------|
+| boiler-room | 0 | P3 no flow (B1) | `binary_sensor.boiler_room_warn_p3_no_flow` |
+| boiler-room | 1 | P1 not charging (B3) | `binary_sensor.boiler_room_warn_p1_not_charging` |
+| boiler-room | 2 | P2 no effect (B6) | `binary_sensor.boiler_room_warn_p2_no_effect` |
+| home-heating | 0 | P4 no flow (H1) | `binary_sensor.home_heating_warn_p4_no_flow` |
+
+Events (reason Logic):
+
+| Event | Type | Source | Value / aux |
+|-------|------|--------|-------------|
+| `BR_EVENT_DIAG_WARNING` ("Pump diagnostic") | 1002 | `0x1040 + bit×2 + raised` | bit / 1 raised, 0 cleared |
+| `HH_EVENT_DIAG_WARNING` ("Pump diagnostic") | 1005 | `0x1040 + bit×2 + raised` | bit / 1 raised, 0 cleared |
+| `HH_EVENT_STEP_START` | 1006 | `0x1050` | pulse s / H2 at start |
+| `HH_EVENT_STEP_RESULT` | 1007 | `0x1051` | dead time s (−1 when H2 never moved) / response °C/s (0 for no response) |
+| `HH_EVENT_STEP_ABORT` | 1008 | `0x1052` | abort code / elapsed s |
+
+The existing limiter (60 s per type and source) applies: a raise → clear → raise of the same check within 60 s
+logs only the first raise and the clear. `diag.warningMask` and HA stay authoritative.
+
+### Settings (appended as the last table; config version stays 1)
+
+boiler-room, group `diag` (the enables are HA config switches, the rest HA numbers, e.g. `b1_en`,
+`b1_min_on`):
+
+| Key | Range | Default | Meaning |
+|-----|-------|---------|---------|
+| `b1En` | Bool | on | B1: P3 no-flow check |
+| `b1MinOn` | 1–60 min | 3 | B1: P3 on at least |
+| `b1Delta` | 5–40 °C (0.5) | 15 | B1: T3 − T6 above |
+| `b1MinRise` | 0.5–10 °C (0.5) | 2 | B1: T6 rise below |
+| `b3En` | Bool | on | B3: P1 charging check |
+| `b3MinOn` | 1–60 min | 10 | B3: P1 on at least |
+| `b3Delta` | 3–40 °C (0.5) | 10 | B3: T1 − T3 above |
+| `b3MinRise` | 0.5–10 °C (0.5) | 1 | B3: T3 rise below |
+| `b6En` | Bool | on | B6: P2 effect check |
+| `b6MinOn` | 1–60 min | 5 | B6: P2 on at least |
+| `b6Delta` | 3–40 °C (0.5) | 10 | B6: T1 − T2 above |
+| `b6MinRise` | 0.5–10 °C (0.5) | 2 | B6: T2 rise below |
+
+home-heating:
+
+| Key | Group | Range | Default | Meaning |
+|-----|-------|-------|---------|---------|
+| `h1En` | diag | Bool | on | H1: P4 no-flow check |
+| `h1MinOn` | diag | 1–60 min | 5 | H1: P4 on at least |
+| `h1K1Min` | diag | 5–95 % | 30 | H1: K1 open above |
+| `h1Delta` | diag | 3–40 °C (0.5) | 10 | H1: H3 − H1 above |
+| `h1MinDiff` | diag | 0.5–10 °C (0.5) | 2 | H1: H2 − H1 below |
+| `k1StepPulse` | k1 | 2–30 s | 10 | K1 step-test OPEN pulse |
+
+The step-test thresholds (steady bands, 0.5 °C move, 0.2 °C / 2 min settle, 10 min cap, 2 °C H3 abort) are
+fixed constants in `K1StepTest.h`, not settings.
+
+### Home-heating tuning entities (HA)
+
+On top of `warn_p4_no_flow` (above) and the settings:
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `h2_error` | sensor, °C, `measurement` | `H2 − h2Set`, 1 decimal (positive = H2 above the setpoint, too warm); unavailable unless H2 is Ok and heating is enabled |
+| `k1_last_pulse` | sensor, s, `measurement` | commanded length of the last control pulse; unavailable until the first one |
+| `k1_last_pulse_dir` | sensor, diagnostic | `open` / `close` / `none` |
+| `k1_pulses_today` | sensor, diagnostic, `total_increasing` | K1 runs since local midnight |
+| `k1_pulses_yesterday` | sensor, diagnostic | K1 runs of the previous local day; unavailable until the first rollover |
+
+Entity totals: boiler-room 18 custom entities (67 in the full registry), home-heating 22 custom (65), both
+≤ 96.
+
+### K1 step test (summary)
+
+A web-only tool on the home-heating status page ("K1 tuning" panel). Start issues one K1 OPEN pulse of
+`k1StepPulse` s under the Control owner, holds K1 feed-forward/feedback, and watches H2: dead time = first
+0.5 °C move, settled = H2 within 0.2 °C for 2 min (or H2 at 10 min), response R = settled rise per pulse
+second. It suggests `k1Period = round(1.5 × dead time)` (10–300) and `k1Gain = 0.5 / R` rounded to 0.5
+(0.5–10), i.e. half the error corrected per period. **Apply** writes `k1Period`, then `k1Gain`, through
+`POST /api/config`; nothing is applied automatically.
+
+- **Start conditions** (first failing is shown, key `st.blk`): `unavailable`, `running`, `heating_off`, `ota`,
+  `p4_off`, `anti_seize`, `sensors` (H1–H3 not Ok), `k1_mode` (not `normal`), `k1_unknown`, `k1_busy`,
+  `k1_headroom` (position + `100 × k1StepPulse / k1Travel` must stay < 100 %), `history` (< 5 min of history,
+  so no test in the first ~5 min after boot), `h3_unsteady` (±1 °C over 5 min), `h2_unsteady` (±0.5 °C).
+- **Aborts** (`res.ab`): `cancel`, `heating_off`, `ota`, `p4_off`, `anti_seize`, `recal`, `sensors`, `k1_mode`,
+  `h3_changed` (H3 moved > 2 °C from its start value). A reboot also ends the test.
+- **Outcomes** (`res.o`): `result` (with a suggestion), `no_response` (no 0.5 °C move in 10 min, or no positive
+  rise; no suggestion), `aborted`.
+- When the test ends, the hold is released: FF is re-applied once K1 is idle, feedback resumes a period later.
+- The test, its live values and the last result are **RAM only** (gone after a reboot). No HA controls.
+
+See [`docs/k1-tuning-guide.md`](docs/k1-tuning-guide.md) for when to run it, how to read it and manual tuning.
+
+### K1 pulse counter (RAM only, A9)
+
+`K1PulseCounter` counts every energisation of the K1 power relay from idle (`K1Driver::runStarts()`), whatever
+the owner (control, recal, anti-seize, step test); extending a run in the same direction is not a new count.
+It is a relay-wear indicator. "Today" rolls into "yesterday" at local midnight (`LocalTimeInfo` from
+`HardwareServices::localTime()`); a gap of more than one day gives yesterday = 0; with no valid time the count
+keeps accumulating in today. The counters are **not persisted**: after a reboot today restarts at 0 and
+yesterday is n/a until the first rollover. The **last pulse** (`k1_last_pulse*`) is only the last
+Control-issued command (FF, feedback or step test), never recal or anti-seize.
+
+### Project command route: `POST /api/project/cmd`
+
+Access W (session + CSRF). Form field `op` (1–255): missing → 400 `missing`, non-numeric or out of range →
+400 `bad_index`; otherwise 202 `{"ok":true,"id":N}` (or 503 `busy`), result via `GET /api/cmd?id=N`. It posts
+a `CommandType::Project` command; `CoreRuntime` passes it to the handler set with
+`CoreServices::setProjectCommandHandler()`.
+
+| Project | op | Result |
+|---------|----|--------|
+| home-heating | 1 = step-test start | `ok` (latched for the next tick) or `rejected` (not ready, running/pending, or blocked) |
+| home-heating | 2 = step-test cancel | `ok` (running or pending start cancelled) or `unchanged` (nothing to cancel) |
+| home-heating | other | `invalid` |
+| boiler-room | any | `invalid` (no handler registered) |
+
+### `/api/state` "ctl" additions (home-heating)
+
+After `"nn"` the home-heating `"ctl"` gains the following members, bringing `/api/state` to a worst case of
+about 2.1 KB (measured by a test; up from 1.87 KB before stage 09; boiler-room `"ctl"` is unchanged, its
+warnings travel in the base `"warnings"`):
+
+```json
+"tu":{"err":-0.4,"lpd":1,"lps":4.5,"pt":12,"py":7},
+"st":{"run":false,"blk":"none","el":0,"ps":10,"dt":null,
+      "res":{"o":"result","ab":null,"dt":22.0,"r":0.250,"p":33,"g":2.0}}
+```
+
+- `tu.err` H2 error (null unless valid), `lpd` last pulse dir (1 / −1 / 0), `lps` its length s, `pt` pulses
+  today, `py` yesterday (null until the first rollover).
+- `st.run` running, `blk` block key, `el` elapsed s, `ps` pulse s, `dt` live dead time (null until seen),
+  `res` the last result (null until a test has ended): `o` outcome, `ab` abort key (null unless aborted), `dt`
+  dead time (null if none), `r` response °C/s, `p`/`g` suggestion (only for a `result` with a valid
+  suggestion).
+
+### Diagnostics & tuning checks (hardware only, NOT TESTED)
+
+None of these has been run on a real board yet.
+
+- [ ] **B1.** Close a valve on P3's loop while P3 runs with a hot accumulator (T3 − T6 > 15 °C): "P3 no flow
+      (B1)" appears in the web header and `warn_p3_no_flow` turns ON after 3 min; opening the valve (T6 rises
+      2 °C) clears it.
+- [ ] **B3 not raised when cold.** A P1 run with a cold boiler (T1 − T3 ≤ 10 °C) raises no B3.
+- [ ] **Pause.** Unplug T6 while B1 is active: the warning clears; after re-plugging, the 3 min timer starts
+      over.
+- [ ] **H1.** Run P4 with a closed radiator valve (K1 > 30 %, H3 > H1 + 10 °C): "P4 no flow (H1)" and
+      `warn_p4_no_flow` after 5 min.
+- [ ] **Step test.** On a steady evening (≥ 5 min after boot, H2 near the setpoint) the panel shows no block
+      reason; Start runs one OPEN pulse, the result is plausible (dead time 10–60 s), and Apply writes both
+      `k1Period` and `k1Gain` (visible in Settings and HA).
+- [ ] **Cancel.** Cancel mid-test: the result shows `aborted` / `cancelled`, and K1 resumes (FF move, then
+      feedback).
+- [ ] **Pulse counter.** `k1_pulses_today` increments on every K1 move (control, recal, anti-seize), and rolls
+      into `k1_pulses_yesterday` at local midnight.
+- [ ] **HA.** The new entities appear: the three boiler-room `warn_*` binary sensors and the `b*` settings; the
+      home-heating `warn_p4_no_flow`, `h2_error`, `k1_last_pulse`, `k1_last_pulse_dir`, `k1_pulses_today`,
+      `k1_pulses_yesterday` and the `h1*` / `k1_step_pulse` settings.
 
 ## Prerequisites
 

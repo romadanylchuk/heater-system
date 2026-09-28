@@ -251,6 +251,26 @@ void WebServices::installWrite(AsyncWebServer& s) {
         sendJson(r, 200, body);
     });
 
+    // POST /api/project/cmd (Write): form op (1..255), a project-defined
+    // command (stage 09, D14). Queued for the loop task's project handler;
+    // the result is polled via /api/cmd (invalid_command without a handler).
+    s.on(routeMatcher(RouteId::ProjectCmd), routeMethod(RouteId::ProjectCmd), [this](AsyncWebServerRequest* r) {
+        if (!admit(_gate, r, RouteId::ProjectCmd)) {
+            return;
+        }
+        const String* opText = formParam(r, "op");
+        if (opText == nullptr || opText->length() == 0) {
+            sendInputError(r, InputError::Missing);
+            return;
+        }
+        uint32_t op = 0;
+        if (!parseU32(opText->c_str(), op) || op < 1 || op > 255) {
+            sendInputError(r, InputError::BadIndex);
+            return;
+        }
+        postAndAnswer(r, makeProjectCommand(static_cast<uint8_t>(op), EventReason::Web, nextCmdId()));
+    });
+
     // POST /api/backup/export (Write): ask the loop task to build the file (D9).
     s.on(routeMatcher(RouteId::BackupExportReq), routeMethod(RouteId::BackupExportReq),
         [this](AsyncWebServerRequest* r) {

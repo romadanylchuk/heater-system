@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <BoilerRoomAlarms.h>
+#include <BoilerRoomDiagnostics.h>
 #include <BoilerRoomHa.h>
 #include <BoilerRoomJson.h>
 #include <BoilerRoomPages.h>
@@ -510,9 +511,15 @@ static const ExpectedEntity EXPECTED[] = {
     {"alarm_t4_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
     {"alarm_t5_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
     {"alarm_t6_fault", HaComponent::BinarySensor, nullptr, "problem", nullptr, "diagnostic"},
+    // Stage 09 (C9): pump-response warnings, CommonState.diag.warningMask bits 0..2.
+    {"warn_p3_no_flow", HaComponent::BinarySensor, nullptr, "problem", nullptr, nullptr},
+    {"warn_p1_not_charging", HaComponent::BinarySensor, nullptr, "problem", nullptr, nullptr},
+    {"warn_p2_no_effect", HaComponent::BinarySensor, nullptr, "problem", nullptr, nullptr},
 };
 constexpr size_t FIRST_ALARM_ENTITY = 4;
-static const uint8_t EXPECTED_ALARM_BIT[] = {0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13};   // EXPECTED[4..]
+static const uint8_t EXPECTED_ALARM_BIT[] = {0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13};   // EXPECTED[4..14]
+constexpr size_t FIRST_WARN_ENTITY = 15;
+static const uint8_t EXPECTED_WARN_BIT[] = {BR_WARN_B1, BR_WARN_B3, BR_WARN_B6};   // EXPECTED[15..17]
 
 static void expectNullableStr(const char* want, const char* got, const char* key) {
     if (want == nullptr) {
@@ -526,8 +533,16 @@ static void test_ha_registry_builds_with_custom_entities() {
     HaFixture fx;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok), static_cast<int>(fx.begin()));
     TEST_ASSERT_TRUE(fx.reg.count() <= HA_MAX_ENTITIES);
-    TEST_ASSERT_EQUAL_UINT32(15, BOILER_ROOM_HA_ENTITY_COUNT);
+    TEST_ASSERT_EQUAL_UINT32(18, BOILER_ROOM_HA_ENTITY_COUNT);
+    TEST_ASSERT_EQUAL_UINT32(BOILER_ROOM_HA_ENTITY_TOTAL, BOILER_ROOM_HA_ENTITY_COUNT);
     TEST_ASSERT_EQUAL_UINT32(sizeof(EXPECTED) / sizeof(EXPECTED[0]), BOILER_ROOM_HA_ENTITY_COUNT);
+    for (size_t a = 0; a < BOILER_ROOM_HA_ENTITY_COUNT; ++a) {   // table order and unique keys
+        TEST_ASSERT_EQUAL_STRING(EXPECTED[a].key, BOILER_ROOM_HA_ENTITIES[a].key);
+        for (size_t b = a + 1; b < BOILER_ROOM_HA_ENTITY_COUNT; ++b) {
+            TEST_ASSERT_NOT_EQUAL_MESSAGE(0, strcmp(BOILER_ROOM_HA_ENTITIES[a].key, BOILER_ROOM_HA_ENTITIES[b].key),
+                BOILER_ROOM_HA_ENTITIES[a].key);
+        }
+    }
     for (const ExpectedEntity& x : EXPECTED) {
         const int i = fx.find(x.key);
         TEST_ASSERT_TRUE_MESSAGE(i >= 0, x.key);
@@ -605,6 +620,29 @@ static void test_ha_alarm_entities_follow_mask_bits() {
     g_ha = nullptr;
 }
 
+// Stage 09 (C9): the warning entities follow diag.warningMask bits 0..2 only,
+// and are always available (like the alarms), bound or not.
+static void test_ha_warning_entities_follow_warning_mask() {
+    HaFixture fx;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok), static_cast<int>(fx.begin()));
+    g_ha = &fx;
+    CommonState s = sampleState();
+    bindBoilerRoomHaStatus(nullptr);
+    TEST_ASSERT_EQUAL_UINT(3, sizeof(EXPECTED_WARN_BIT));
+    for (size_t w = 0; w < sizeof(EXPECTED_WARN_BIT); ++w) {
+        const char* key = EXPECTED[FIRST_WARN_ENTITY + w].key;
+        s.alarms.activeMask = 0xFFFFFFFFu;   // alarms never leak into warnings
+        s.diag.warningMask = 0;
+        expectHaState(key, s, true, "OFF");
+        s.alarms.activeMask = 0;
+        s.diag.warningMask = 1u << EXPECTED_WARN_BIT[w];
+        expectHaState(key, s, true, "ON");
+        s.diag.warningMask = ~(1u << EXPECTED_WARN_BIT[w]);   // every other bit set
+        expectHaState(key, s, true, "OFF");
+    }
+    g_ha = nullptr;
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_ctl_json_full_shape);
@@ -621,5 +659,6 @@ int main() {
     RUN_TEST(test_ha_registry_builds_with_custom_entities);
     RUN_TEST(test_ha_status_entities_unbound_and_bound);
     RUN_TEST(test_ha_alarm_entities_follow_mask_bits);
+    RUN_TEST(test_ha_warning_entities_follow_warning_mask);
     return UNITY_END();
 }

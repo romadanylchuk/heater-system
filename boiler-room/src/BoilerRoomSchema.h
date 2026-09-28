@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <BoilerRoomControlSettings.h>
+#include <BoilerRoomDiagSettings.h>
 #include <CommonSettings.h>
 #include <ConfigSchema.h>
 #include <DisplaySettings.h>
@@ -50,8 +51,10 @@ inline constexpr SettingDescriptor BOILER_ROOM_SETTINGS[] = {
 // enum indices never shift. The controller settings table (stage 07,
 // BoilerRoomEngine) is appended LAST (tables[4]): purely additive (missing NVS
 // keys load their defaults), so the config version is unchanged and there is no
-// migration.
+// migration. Stage 09: the diagnostics settings table (B1/B3/B6) is appended
+// LAST (tables[5]) the same way -- additive, config version unchanged (D20).
 inline constexpr SettingsTable BOILER_ROOM_TABLES[] = {COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE,
-    makeTable(BOILER_ROOM_SETTINGS), DISPLAY_SETTINGS_TABLE, BOILER_ROOM_CONTROL_SETTINGS_TABLE};
+    makeTable(BOILER_ROOM_SETTINGS), DISPLAY_SETTINGS_TABLE, BOILER_ROOM_CONTROL_SETTINGS_TABLE,
+    BOILER_ROOM_DIAG_SETTINGS_TABLE};
 inline constexpr ConfigSchema BOILER_ROOM_SCHEMA = {
-    "boiler-room", BOILER_ROOM_CONFIG_VERSION, BOILER_ROOM_TABLES, 5, nullptr, 0};
+    "boiler-room", BOILER_ROOM_CONFIG_VERSION, BOILER_ROOM_TABLES, 6, nullptr, 0};

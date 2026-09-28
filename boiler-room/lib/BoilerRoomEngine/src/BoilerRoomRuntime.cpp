@@ -15,7 +15,18 @@ const char* const RUNTIME_KEYS[] = {
 static_assert(sizeof(RUNTIME_KEYS) / sizeof(RUNTIME_KEYS[0]) == BR_RUNTIME_KEY_COUNT,
     "RUNTIME_KEYS must list exactly BR_RUNTIME_KEY_COUNT keys, in BrRuntimeKey order");
 
+// Stage 09 (C9): the diagnostics keys, in BrDiagKey (= C7 table) order.
+const char* const DIAG_KEYS[] = {
+    BR_KEY_B1_EN, BR_KEY_B1_MIN_ON, BR_KEY_B1_DELTA, BR_KEY_B1_MIN_RISE,
+    BR_KEY_B3_EN, BR_KEY_B3_MIN_ON, BR_KEY_B3_DELTA, BR_KEY_B3_MIN_RISE,
+    BR_KEY_B6_EN, BR_KEY_B6_MIN_ON, BR_KEY_B6_DELTA, BR_KEY_B6_MIN_RISE,
+};
+static_assert(sizeof(DIAG_KEYS) / sizeof(DIAG_KEYS[0]) == BR_DIAG_KEY_COUNT,
+    "DIAG_KEYS must list exactly BR_DIAG_KEY_COUNT keys, in BrDiagKey order");
+static_assert(BR_DIAG_KEY_COUNT == BOILER_ROOM_DIAG_SETTING_COUNT, "one BrDiagKey per C7 row");
+
 size_t at(BrRuntimeKey k) { return static_cast<size_t>(k); }
+size_t at(BrDiagKey k) { return static_cast<size_t>(k); }
 
 // Expected descriptor type: the C2 table row for the controller keys, Bool for homeNoNeed.
 bool expectedType(const char* key, SettingType& out) {
@@ -26,6 +37,17 @@ bool expectedType(const char* key, SettingType& out) {
     for (size_t i = 0; i < BOILER_ROOM_CONTROL_SETTING_COUNT; ++i) {
         if (strcmp(BOILER_ROOM_CONTROL_SETTINGS[i].key, key) == 0) {
             out = BOILER_ROOM_CONTROL_SETTINGS[i].type;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Expected descriptor type of a diag key: its C7 table row.
+bool expectedDiagType(const char* key, SettingType& out) {
+    for (size_t i = 0; i < BOILER_ROOM_DIAG_SETTING_COUNT; ++i) {
+        if (strcmp(BOILER_ROOM_DIAG_SETTINGS[i].key, key) == 0) {
+            out = BOILER_ROOM_DIAG_SETTINGS[i].type;
             return true;
         }
     }
@@ -45,6 +67,7 @@ BoilerRoomRuntime::BoilerRoomRuntime(CommonState& state, BoilerRoomStatus& statu
 
 BoilerRoomRuntimeStatus BoilerRoomRuntime::begin(uint64_t nowMs) {
     _ready = false;
+    _diagReady = false;
     for (size_t k = 0; k < BR_RUNTIME_KEY_COUNT; ++k) {
         const int index = RUNTIME_KEYS[k] == nullptr ? -1 : _config.indexOf(RUNTIME_KEYS[k]);
         const SettingDescriptor* d = index < 0 ? nullptr : _config.descriptor(static_cast<size_t>(index));
@@ -70,7 +93,81 @@ BoilerRoomRuntimeStatus BoilerRoomRuntime::begin(uint64_t nowMs) {
         _prevSafety[ch] = false;
     }
     _ready = true;
+
+    // Stage 09 (C9, D2): the diag keys are resolved AFTER, and independently of,
+    // the control keys. A failure only disables the diagnostics -- it must never
+    // make the runtime not-ready (not-ready forces P1 ON).
+    _diagReady = resolveDiagKeys();
     return BoilerRoomRuntimeStatus::Ok;
+}
+
+bool BoilerRoomRuntime::resolveDiagKeys() {
+    for (size_t k = 0; k < BR_DIAG_KEY_COUNT; ++k) {
+        const int index = _config.indexOf(DIAG_KEYS[k]);
+        const SettingDescriptor* d = index < 0 ? nullptr : _config.descriptor(static_cast<size_t>(index));
+        SettingType want{};
+        if (d == nullptr || !expectedDiagType(DIAG_KEYS[k], want) || d->type != want) {
+            _events.logEvent(toU16(EventType::DiagnosticWarning),
+                static_cast<uint16_t>(EVENT_SOURCE_DIAG_BASE + BR_DIAG_CODE_DIAG_SETTING_MISSING),
+                static_cast<float>(k), 0.0f, EventReason::Logic);
+            return false;   // _diagIdx may be partly filled; it is meaningless while !_diagReady
+        }
+        _diagIdx[k] = static_cast<size_t>(index);
+    }
+    _diag.reset();
+    _prevWarn = 0;
+    return true;
+}
+
+BoilerRoomDiagSettings BoilerRoomRuntime::readDiagSettings(const ConfigEngine& c, const size_t idx[]) {
+    BoilerRoomDiagSettings s{};
+    s.b1 = RiseCheckParams{c.getBool(idx[at(BrDiagKey::B1En)]), readU32(c, idx[at(BrDiagKey::B1MinOn)]),
+        c.getNumber(idx[at(BrDiagKey::B1Delta)]), c.getNumber(idx[at(BrDiagKey::B1MinRise)])};
+    s.b3 = RiseCheckParams{c.getBool(idx[at(BrDiagKey::B3En)]), readU32(c, idx[at(BrDiagKey::B3MinOn)]),
+        c.getNumber(idx[at(BrDiagKey::B3Delta)]), c.getNumber(idx[at(BrDiagKey::B3MinRise)])};
+    s.b6 = RiseCheckParams{c.getBool(idx[at(BrDiagKey::B6En)]), readU32(c, idx[at(BrDiagKey::B6MinOn)]),
+        c.getNumber(idx[at(BrDiagKey::B6Delta)]), c.getNumber(idx[at(BrDiagKey::B6MinRise)])};
+    return s;
+}
+
+void BoilerRoomRuntime::publishWarnings(uint32_t mask) {
+    // D6: the runtime owns diag.warningMask bits 0..7 only; the others are preserved.
+    mask &= BR_WARN_OWNED_MASK;
+    _state.diag.warningMask = (_state.diag.warningMask & ~BR_WARN_OWNED_MASK) | mask;
+    const uint32_t changed = (mask ^ _prevWarn) & BR_WARN_OWNED_MASK;
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+        const uint32_t m = 1u << bit;
+        if ((changed & m) == 0) {
+            continue;
+        }
+        const uint16_t raised = (mask & m) != 0 ? 1u : 0u;
+        // D7: a distinct source per check and direction (60 s limiter safe for one
+        // raise/clear pair). By design, a raise -> clear -> raise of the same bit
+        // within 60 s of the first raise (e.g. b1En toggled off/on quickly) has the
+        // second raise dropped by the real EventLog limiter (same type+source): the
+        // log's last entry for that bit then reads "cleared" while the bit is set.
+        // diag.warningMask and the HA sensors stay authoritative.
+        logEvent(BR_EVENT_DIAG_WARNING, static_cast<uint16_t>(BR_EVENT_SOURCE_DIAG_BASE + bit * 2u + raised),
+            static_cast<float>(bit), static_cast<float>(raised));
+    }
+    _prevWarn = mask;
+}
+
+void BoilerRoomRuntime::tickDiagnostics(const BoilerRoomInputs& in, uint64_t nowMs) {
+    if (!_diagReady) {
+        publishWarnings(0);
+        return;
+    }
+    // D2: inputs only (sanitized sensors + relay ACTUAL); the result is a mask
+    // that is published, never fed back. No relay / flag / controller writes.
+    BoilerRoomDiagInputs d{};
+    for (uint8_t i = 0; i < BR_SENSOR_COUNT; ++i) {
+        d.sensor[i] = in.sensor[i];
+    }
+    for (uint8_t ch = 0; ch < BR_PUMP_COUNT; ++ch) {
+        d.pumpActual[ch] = _relays.actual(ch);
+    }
+    publishWarnings(_diag.update(d, readDiagSettings(_config, _diagIdx), nowMs));
 }
 
 BoilerRoomSettings BoilerRoomRuntime::readSettings(const ConfigEngine& c, const size_t idx[]) {
@@ -105,6 +202,7 @@ void BoilerRoomRuntime::tick(uint64_t nowMs) {
         _status = BoilerRoomStatus{};
         _status.ready = false;
         _relays.requestSafety(BR_PUMP_P1, true);
+        publishWarnings(0);   // stage 09: no diagnostics while not ready; clears logged once
         return;
     }
 
@@ -188,6 +286,10 @@ void BoilerRoomRuntime::tick(uint64_t nowMs) {
             _prevSafety[ch] = d.safety;
         }
     }
+
+    // 8b. Pump-response diagnostics (stage 09, C9): after every control decision
+    // and output, warnings only (D2).
+    tickDiagnostics(in, nowMs);
 
     // 9. Status slice.
     BoilerRoomStatus st{};

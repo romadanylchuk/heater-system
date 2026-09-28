@@ -65,6 +65,9 @@ void setup() {
     if (ctl.begin(core.time().monoMs()) != HomeHeatingRuntimeStatus::Ok) {
         Serial.println("[ctl] settings missing: outputs held off");
     }
+    // Stage 09: K1 step-test Start/Cancel arrive as CommandType::Project via
+    // POST /api/project/cmd (the only producer); applied on the loop task by core.tick().
+    core.setProjectCommandHandler(&HomeHeatingRuntime::commandHook, &ctl);
     bindHomeHeatingHaStatus(&ctlStatus);
     web.setStateExtension(homeHeatingStateJson, &ctlStatus);
     // Controller pages: after beginEarly(), strictly before display.begin().
@@ -88,7 +91,7 @@ void loop() {
         // them) -> net (publishes the new status) -> web (snapshots include "ctl").
         core.tick();
         hw.tick();
-        ctl.tick(core.time().monoMs());
+        ctl.tick(core.time().monoMs(), hw.localTime());  // local may be NO_LOCAL_TIME
         net.tick();
         web.tick();
     }

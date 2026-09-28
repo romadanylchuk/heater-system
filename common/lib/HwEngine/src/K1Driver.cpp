@@ -23,6 +23,7 @@ void K1Driver::begin(uint64_t nowMs) {
     _motion = K1Motion{0, 0};
     _hasMoved = false;
     _lastMoveMs = 0;
+    _runStarts = 0;
 }
 
 bool K1Driver::requestPulse(K1Direction dir, uint32_t durationMs, uint64_t nowMs, K1Owner owner) {
@@ -97,6 +98,7 @@ void K1Driver::tick(uint64_t nowMs) {
         if ((nowMs - _lastDirChangeMs) >= DEAD_TIME_MS) {
             _powerOn = true;
             _running = true;
+            ++_runStarts;
             _runDir = _pendDir;
             _runStartMs = nowMs;
             _runEndMs = nowMs + _pendDurMs;

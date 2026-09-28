@@ -7,12 +7,15 @@
 #include <HaDiscovery.h>
 #include <HaEntityRegistry.h>
 #include <HomeHeatingControlSettings.h>
+#include <HomeHeatingDiagSettings.h>
+#include <HomeHeatingHa.h>
 #include <HwConfig.h>
 #include <HwRuntime.h>
 #include <HwSettings.h>
 #include <LocalTime.h>
 #include <NetIdentity.h>
 #include <RelayMask.h>
+#include <stdio.h>
 #include <string.h>
 #include "../../../common/test/fakes/FakeClock.h"
 #include "../../../common/test/fakes/FakeOneWireBus.h"
@@ -249,7 +252,7 @@ static void test_display_settings_resolve_in_schema() {
 
 // Stage 08: the controller settings table is appended LAST (tables[4]).
 static void test_control_table_is_last() {
-    TEST_ASSERT_EQUAL_UINT32(5, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tableCount));
+    TEST_ASSERT_EQUAL_UINT32(6, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tableCount));   // stage 09: diag = [5]
     TEST_ASSERT_EQUAL_PTR(HOME_HEATING_CONTROL_SETTINGS, HOME_HEATING_SCHEMA.tables[4].items);
     TEST_ASSERT_EQUAL_UINT32(
         HOME_HEATING_CONTROL_SETTING_COUNT, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tables[4].count));
@@ -277,6 +280,50 @@ static void test_control_table_is_last() {
     TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_ROTATE_S) >= 0);
     TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_BRIGHTNESS) >= 0);
     TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_ROTATE_S) < config.indexOf(HH_KEY_H2_SET));
+}
+
+// Stage 09: the diagnostics settings table is appended LAST (tables[5], D20).
+static void test_diag_table_is_last() {
+    TEST_ASSERT_EQUAL_UINT32(6, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tableCount));
+    TEST_ASSERT_EQUAL_PTR(HOME_HEATING_DIAG_SETTINGS, HOME_HEATING_SCHEMA.tables[5].items);
+    TEST_ASSERT_EQUAL_UINT32(6, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tables[5].count));
+    TEST_ASSERT_EQUAL_UINT32(
+        HOME_HEATING_DIAG_SETTING_COUNT, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tables[5].count));
+    TEST_ASSERT_EQUAL_UINT16(1, HOME_HEATING_CONFIG_VERSION);
+
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
+
+    size_t total = 0;
+    for (size_t t = 0; t < HOME_HEATING_SCHEMA.tableCount; ++t) {
+        total += HOME_HEATING_SCHEMA.tables[t].count;
+    }
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(total), static_cast<uint32_t>(config.count()));
+
+    // The diag keys occupy the trailing indices; earlier indices did not move.
+    const size_t firstDiag = total - HOME_HEATING_DIAG_SETTING_COUNT;
+    TEST_ASSERT_TRUE(config.indexOf(HH_KEY_K2_H4_MAX_HYST) < static_cast<int>(firstDiag));
+    const char* keys[] = {HH_KEY_H1_EN, HH_KEY_H1_MIN_ON, HH_KEY_H1_K1_MIN, HH_KEY_H1_DELTA, HH_KEY_H1_MIN_DIFF,
+        HH_KEY_K1_STEP_PULSE};
+    for (size_t k = 0; k < HOME_HEATING_DIAG_SETTING_COUNT; ++k) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(firstDiag + k), config.indexOf(keys[k]), keys[k]);
+        const SettingDescriptor* d = config.descriptor(firstDiag + k);
+        TEST_ASSERT_NOT_NULL_MESSAGE(d, keys[k]);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(keys[k], d->nvsKey, keys[k]);   // key == nvsKey
+        TEST_ASSERT_TRUE_MESSAGE(strlen(d->nvsKey) <= 15, keys[k]);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(k == 5 ? "k1" : "diag", d->group, keys[k]);
+    }
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(HomeHeatingSetting::HeatingEnabled), config.indexOf(HH_KEY_HEATING_ENABLED));
+
+    HaEntityRegistry reg;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(reg.build(config, HOME_HEATING_HW, nullptr, 0)));
+    TEST_ASSERT_TRUE(reg.count() <= HA_MAX_ENTITIES);
 }
 
 // The plan's C2 table (literal values): key, type, min, max, default.
@@ -359,6 +406,52 @@ static void test_control_settings_ha_entities() {
     TEST_ASSERT_TRUE(findHaKey(reg, "k1_ff_step") >= 0);
 }
 
+// Stage 09 phase 10 (D21): the full registry -- settings + sensors + relays +
+// common + the 22 home-heating custom entities -- builds within the budget, the
+// diag settings are exposed, and every discovery payload fits.
+static void test_full_registry_with_custom_entities_fits() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
+    HaEntityRegistry reg;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(reg.build(config, HOME_HEATING_HW, HOME_HEATING_HA_ENTITIES, HOME_HEATING_HA_ENTITY_COUNT)));
+    TEST_ASSERT_EQUAL_UINT32(22, HOME_HEATING_HA_ENTITY_COUNT);
+    TEST_ASSERT_TRUE(reg.count() <= HA_MAX_ENTITIES);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "home-heating HA entities = %u", static_cast<unsigned>(reg.count()));
+    TEST_MESSAGE(msg);
+
+    const int en = findHaKey(reg, "h1_en");
+    TEST_ASSERT_TRUE(en >= 0);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaComponent::Switch), static_cast<int>(reg.entity(en).component));
+    TEST_ASSERT_TRUE(reg.entity(en).configCategory);
+    const char* numbers[] = {"h1_min_on", "k1_step_pulse"};
+    for (const char* k : numbers) {
+        const int i = findHaKey(reg, k);
+        TEST_ASSERT_TRUE_MESSAGE(i >= 0, k);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(HaComponent::Number), static_cast<int>(reg.entity(i).component), k);
+    }
+    const char* custom[] = {"warn_p4_no_flow", "h2_error", "k1_last_pulse", "k1_last_pulse_dir", "k1_pulses_today",
+        "k1_pulses_yesterday"};
+    for (const char* k : custom) {
+        TEST_ASSERT_TRUE_MESSAGE(findHaKey(reg, k) >= 0, k);
+    }
+
+    static char payload[HA_DISCOVERY_PAYLOAD_MAX];
+    char topic[HA_TOPIC_MAX];
+    for (size_t i = 0; i < reg.count(); ++i) {
+        const HaEntity& e = reg.entity(i);
+        const size_t n = buildDiscoveryPayload(reg, i, config, HOME_HEATING_NET, "1.2.3-test", payload, sizeof(payload));
+        TEST_ASSERT_TRUE_MESSAGE(n > 0 && n < HA_DISCOVERY_PAYLOAD_MAX, e.key);
+        TEST_ASSERT_TRUE_MESSAGE(buildDiscoveryTopic(HOME_HEATING_NET, e, topic, sizeof(topic)), e.key);
+        TEST_ASSERT_TRUE_MESSAGE(buildStateTopic(HOME_HEATING_NET, e, topic, sizeof(topic)), e.key);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_relay_channel_count_is_six);
@@ -372,7 +465,9 @@ int main() {
     RUN_TEST(test_discovery_payloads_fit);
     RUN_TEST(test_display_settings_resolve_in_schema);
     RUN_TEST(test_control_table_is_last);
+    RUN_TEST(test_diag_table_is_last);
     RUN_TEST(test_control_keys_min_max);
     RUN_TEST(test_control_settings_ha_entities);
+    RUN_TEST(test_full_registry_with_custom_entities_fits);
     return UNITY_END();
 }

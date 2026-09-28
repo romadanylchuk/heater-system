@@ -56,6 +56,14 @@ public:
         _extCtx = ctx;
     }
 
+    // Registers the handler for CommandType::Project (stage 09, D14). Separate
+    // from the extension handler, which stays owned by HwRuntime. Without a
+    // handler, Project commands answer InvalidCommand.
+    void setProjectHandler(CommandExtensionHandler handler, void* ctx) {
+        _projHandler = handler;
+        _projCtx = ctx;
+    }
+
     // Registers the per-command result observer (D7). nullptr disables it.
     void setResultHook(CommandResultHook hook, void* ctx) {
         _resultHook = hook;
@@ -73,6 +81,9 @@ private:
 
     CommandExtensionHandler _extHandler = nullptr;
     void* _extCtx = nullptr;
+
+    CommandExtensionHandler _projHandler = nullptr;
+    void* _projCtx = nullptr;
 
     CommandResultHook _resultHook = nullptr;
     void* _resultHookCtx = nullptr;

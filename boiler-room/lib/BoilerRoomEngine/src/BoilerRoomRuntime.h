@@ -6,6 +6,7 @@
 #include <EventTypes.h>
 #include <RelayBank.h>
 #include "BoilerRoomController.h"
+#include "BoilerRoomDiagnostics.h"
 #include "BoilerRoomStatus.h"
 
 // boiler-room controller runtime adapter (stage 07, C10). Pure: reads
@@ -27,6 +28,16 @@ constexpr size_t BR_RUNTIME_KEY_COUNT = 18;
 static_assert(static_cast<size_t>(BrRuntimeKey::HomeNoNeed) + 1 == BR_RUNTIME_KEY_COUNT,
     "BR_RUNTIME_KEY_COUNT must match the BrRuntimeKey enum");
 
+// Diagnostics keys (stage 09, C9), in BOILER_ROOM_DIAG_SETTINGS table order.
+// Resolved separately from BrRuntimeKey: a missing/mistyped diag key only
+// disables the diagnostics, it never makes the runtime not-ready (D2).
+enum class BrDiagKey : uint8_t {
+    B1En, B1MinOn, B1Delta, B1MinRise, B3En, B3MinOn, B3Delta, B3MinRise, B6En, B6MinOn, B6Delta, B6MinRise,
+};
+constexpr size_t BR_DIAG_KEY_COUNT = 12;
+static_assert(static_cast<size_t>(BrDiagKey::B6MinRise) + 1 == BR_DIAG_KEY_COUNT,
+    "BR_DIAG_KEY_COUNT must match the BrDiagKey enum");
+
 class BoilerRoomRuntime {
 public:
     BoilerRoomRuntime(CommonState& state, BoilerRoomStatus& status, ConfigEngine& config, EventSink& events,
@@ -39,9 +50,13 @@ public:
     void tick(uint64_t nowMs);
 
     bool ready() const { return _ready; }
+    bool diagReady() const { return _diagReady; }
 
     // Reads the raw (unguarded) settings; idx[] is indexed by BrRuntimeKey.
     static BoilerRoomSettings readSettings(const ConfigEngine& c, const size_t idx[]);
+
+    // Reads the diagnostics settings; idx[] is indexed by BrDiagKey.
+    static BoilerRoomDiagSettings readDiagSettings(const ConfigEngine& c, const size_t idx[]);
 
 private:
     CommonState& _state;
@@ -62,5 +77,14 @@ private:
     bool _prevOn[BR_PUMP_COUNT] = {};
     bool _prevSafety[BR_PUMP_COUNT] = {};
 
+    // Pump-response diagnostics (stage 09, C9): warnings only, never a control input (D2).
+    BoilerRoomDiagnostics _diag;
+    bool _diagReady = false;
+    size_t _diagIdx[BR_DIAG_KEY_COUNT] = {};
+    uint32_t _prevWarn = 0;   // owned warning bits last published (D6)
+
     void logEvent(uint16_t type, uint16_t source, float value, float aux);
+    bool resolveDiagKeys();
+    void tickDiagnostics(const BoilerRoomInputs& in, uint64_t nowMs);
+    void publishWarnings(uint32_t mask);
 };

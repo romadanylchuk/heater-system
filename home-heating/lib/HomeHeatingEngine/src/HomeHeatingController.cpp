@@ -45,6 +45,7 @@ HomeHeatingOutputs HomeHeatingController::update(
     ki.k1AntiSeizeOwned = in.k1AntiSeizeOwned;
     ki.inhibited = in.inhibited;
     ki.motion = in.k1Motion;
+    ki.hold = in.k1Hold;
     const K1Decision k1 = _k1.update(ki, g, nowMs);
 
     // K2 (independent of heatingEnabled).

@@ -5,6 +5,7 @@
 #include <ConfigSchema.h>
 #include <DisplaySettings.h>
 #include <HomeHeatingControlSettings.h>
+#include <HomeHeatingDiagSettings.h>
 #include <HwSettings.h>
 #include <SettingDescriptor.h>
 
@@ -47,8 +48,11 @@ inline constexpr SettingDescriptor HOME_HEATING_SETTINGS[] = {
 // enum indices never shift. The controller settings table (stage 08,
 // HomeHeatingEngine) is appended LAST (tables[4], D19): purely additive
 // (missing NVS keys load their defaults), so the config version is unchanged
-// and there is no migration.
+// and there is no migration. Stage 09 appends the diagnostics table (H1 P4
+// no-flow check + K1 step-test pulse, HomeHeatingDiagSettings) LAST as
+// tables[5] (D20): again purely additive, config version stays 1.
 inline constexpr SettingsTable HOME_HEATING_TABLES[] = {COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE,
-    makeTable(HOME_HEATING_SETTINGS), DISPLAY_SETTINGS_TABLE, HOME_HEATING_CONTROL_SETTINGS_TABLE};
+    makeTable(HOME_HEATING_SETTINGS), DISPLAY_SETTINGS_TABLE, HOME_HEATING_CONTROL_SETTINGS_TABLE,
+    HOME_HEATING_DIAG_SETTINGS_TABLE};
 inline constexpr ConfigSchema HOME_HEATING_SCHEMA = {
-    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 5, nullptr, 0};
+    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 6, nullptr, 0};

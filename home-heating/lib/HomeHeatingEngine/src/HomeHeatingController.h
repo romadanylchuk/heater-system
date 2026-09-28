@@ -19,6 +19,7 @@ struct HomeHeatingInputs {
     bool p4RelayActual, p4ExerciseRunning, k2RelayActual, k2ExerciseRunning;
     bool k1Busy, k1AntiSeizeOwned, inhibited;
     K1Motion k1Motion;
+    bool k1Hold = false;   // stage 09: K1 step test running -> K1Inputs.hold (C13); appended last
 };
 
 struct HomeHeatingOutputs {

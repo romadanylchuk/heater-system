@@ -410,6 +410,134 @@ static void rt_test_command_none_is_invalid_even_with_handler() {
     TEST_ASSERT_EQUAL_INT(0, rec.calls);
 }
 
+// ---- Project command path (stage 09, C3/D14) ---------------------------------
+
+namespace {
+struct ProjHandlerCallRecord {
+    int calls = 0;
+    CommandType lastType = CommandType::None;
+    uint16_t lastOp = 0;
+    uint32_t lastId = 0;
+    uint64_t lastMonoMs = 0;
+    CommandStatus answer = CommandStatus::Ok;
+};
+
+CommandStatus projHandlerRecord(Command& cmd, uint64_t monoMs, void* ctx) {
+    auto* rec = static_cast<ProjHandlerCallRecord*>(ctx);
+    ++rec->calls;
+    rec->lastType = cmd.type;
+    rec->lastOp = cmd.settingIndex;
+    rec->lastId = cmd.id;
+    rec->lastMonoMs = monoMs;
+    return rec->answer;
+}
+
+struct ResultHookRecord {
+    int calls = 0;
+    uint32_t lastId = 0;
+    CommandType lastType = CommandType::None;
+    CommandStatus lastStatus = CommandStatus::Ok;
+};
+
+void resultHookRecord(const Command& cmd, CommandStatus status, void* ctx) {
+    auto* rec = static_cast<ResultHookRecord*>(ctx);
+    ++rec->calls;
+    rec->lastId = cmd.id;
+    rec->lastType = cmd.type;
+    rec->lastStatus = status;
+}
+}  // namespace
+
+static void rt_test_make_project_command_fields() {
+    Command cmd = makeProjectCommand(3, EventReason::Web, 7);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::Project), static_cast<int>(cmd.type));
+    TEST_ASSERT_EQUAL_UINT16(3, cmd.settingIndex);
+    TEST_ASSERT_EQUAL_UINT32(7, cmd.id);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(EventReason::Web), static_cast<int>(cmd.origin));
+    TEST_ASSERT_NULL(cmd.payload);
+
+    Command maxOp = makeProjectCommand(255, EventReason::Web, 8);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::Project), static_cast<int>(maxOp.type));
+    TEST_ASSERT_EQUAL_UINT16(255, maxOp.settingIndex);
+
+    Command zero = makeProjectCommand(0, EventReason::Web, 9);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::None), static_cast<int>(zero.type));
+    TEST_ASSERT_EQUAL_UINT32(9, zero.id);
+}
+
+static void rt_test_project_command_without_handler_is_invalid_command() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(TEST_SCHEMA_A_V1, 0)));
+    InMemoryCommandQueue queue;
+    CommonState state{};
+    CoreRuntime runtime(state, config, log, queue);
+
+    // The extension handler (HwRuntime's slot) must not pick up Project.
+    ExtHandlerCallRecord ext;
+    runtime.setExtensionHandler(&extHandlerRecordAndOk, &ext);
+
+    TEST_ASSERT_TRUE(queue.post(makeProjectCommand(2, EventReason::Web, 11)));
+    runtime.tick(0);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CommandStatus::InvalidCommand), state.system.lastCommandStatus);
+    TEST_ASSERT_EQUAL_UINT32(11, state.system.lastCommandId);
+    TEST_ASSERT_EQUAL_INT(0, ext.calls);
+}
+
+static void rt_test_project_handler_receives_op_and_status_propagates() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(TEST_SCHEMA_A_V1, 0)));
+    InMemoryCommandQueue queue;
+    CommonState state{};
+    CoreRuntime runtime(state, config, log, queue);
+
+    ProjHandlerCallRecord proj;
+    proj.answer = CommandStatus::Rejected;
+    ExtHandlerCallRecord ext;
+    ResultHookRecord hook;
+    runtime.setProjectHandler(&projHandlerRecord, &proj);
+    runtime.setExtensionHandler(&extHandlerRecordAndOk, &ext);
+    runtime.setResultHook(&resultHookRecord, &hook);
+
+    TEST_ASSERT_TRUE(queue.post(makeProjectCommand(3, EventReason::Web, 7)));
+    runtime.tick(1234);
+
+    TEST_ASSERT_EQUAL_INT(1, proj.calls);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::Project), static_cast<int>(proj.lastType));
+    TEST_ASSERT_EQUAL_UINT16(3, proj.lastOp);
+    TEST_ASSERT_EQUAL_UINT32(7, proj.lastId);
+    TEST_ASSERT_TRUE(proj.lastMonoMs == 1234);
+    TEST_ASSERT_EQUAL_INT(0, ext.calls);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CommandStatus::Rejected), state.system.lastCommandStatus);
+    TEST_ASSERT_EQUAL_UINT32(7, state.system.lastCommandId);
+    TEST_ASSERT_EQUAL_INT(1, hook.calls);
+    TEST_ASSERT_EQUAL_UINT32(7, hook.lastId);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandType::Project), static_cast<int>(hook.lastType));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected), static_cast<int>(hook.lastStatus));
+
+    // An extension type goes to the extension handler, never the project handler.
+    uint8_t addr[8] = {0x28, 1, 2, 3, 4, 5, 6, 7};
+    proj.answer = CommandStatus::Ok;
+    Command assign = makeAssignSensor(1, addr, EventReason::Web, 8);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Ok), static_cast<int>(runtime.apply(assign, 0)));
+    TEST_ASSERT_EQUAL_INT(1, proj.calls);
+    TEST_ASSERT_EQUAL_INT(1, ext.calls);
+
+    // op 0 (type None) is refused before any handler.
+    Command zero = makeProjectCommand(0, EventReason::Web, 9);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidCommand), static_cast<int>(runtime.apply(zero, 0)));
+    TEST_ASSERT_EQUAL_INT(1, proj.calls);
+    TEST_ASSERT_EQUAL_INT(3, hook.calls);
+}
+
 // Runs every test in this suite. Call between UNITY_BEGIN()/UNITY_END() in the wrapper.
 inline void runRuntimeSuite() {
     RUN_TEST(rt_test_set_number_applied_on_tick);
@@ -429,4 +557,7 @@ inline void runRuntimeSuite() {
     RUN_TEST(rt_test_assign_sensor_without_handler_is_invalid_command);
     RUN_TEST(rt_test_extension_handler_called_once_for_extension_types_not_for_set_number);
     RUN_TEST(rt_test_command_none_is_invalid_even_with_handler);
+    RUN_TEST(rt_test_make_project_command_fields);
+    RUN_TEST(rt_test_project_command_without_handler_is_invalid_command);
+    RUN_TEST(rt_test_project_handler_receives_op_and_status_propagates);
 }

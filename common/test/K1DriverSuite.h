@@ -61,6 +61,7 @@ public:
     K1Motion takeMotion() { return _k1.takeMotion(); }
     bool hasMoved() const { return _k1.hasMoved(); }
     uint64_t lastMoveMs() const { return _k1.lastMoveMs(); }
+    uint32_t runStarts() const { return _k1.runStarts(); }
 
 private:
     K1Driver _k1;
@@ -300,6 +301,108 @@ static void k1_test_owner_and_motion_tracking() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(K1Owner::None), static_cast<int>(k1.owner()));  // idle again
 }
 
+// --- runStarts() energization counter (stage 09 C2/D8) ---
+
+static void k1_test_run_starts_counts_at_power_on_not_request() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_EQUAL_UINT32(0, k1.runStarts());
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Open, 1000, t));
+    TEST_ASSERT_EQUAL_UINT32(0, k1.runStarts());  // pending only
+    stepTo(k1, t, K1_BEGIN_MS + 1900);            // still in the dead times
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(0, k1.runStarts());
+    stepTo(k1, t, K1_BEGIN_MS + 2000);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, t + 1000);
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+}
+
+static void k1_test_run_starts_same_direction_extension_not_counted() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 2000, t));
+    stepTo(k1, t, t + 100);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, t + 1000);
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 3000, t));  // extend
+    stepTo(k1, t, t + 2900);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, t + 100);
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+}
+
+static void k1_test_run_starts_reversal_counts_again() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 5000, t));
+    stepTo(k1, t, t + 100);
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, t + 1000);
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Open, 1000, t));  // reversal
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    const uint64_t off = t;
+    stepTo(k1, t, off + 1900);  // dead time, direction change, dead time
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, off + 2000);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_TRUE(k1.directionOpen());
+    TEST_ASSERT_EQUAL_UINT32(2, k1.runStarts());
+}
+
+static void k1_test_run_starts_cancel_then_new_pulse_counts() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 5000, t));
+    stepTo(k1, t, t + 500);
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    k1.cancel(t);
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 1000, t));
+    stepTo(k1, t, t + 100);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(2, k1.runStarts());
+}
+
+static void k1_test_run_starts_replaced_pending_counted_once() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Open, 1000, t));
+    stepTo(k1, t, t + 500);  // still pending (dead time)
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Open, 2000, t));  // replace while pending
+    TEST_ASSERT_EQUAL_UINT32(0, k1.runStarts());
+    stepTo(k1, t, K1_BEGIN_MS + 2000);
+    TEST_ASSERT_TRUE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    stepTo(k1, t, t + 2000);
+    TEST_ASSERT_FALSE(k1.powerOn());
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+}
+
+static void k1_test_run_starts_zeroed_by_begin() {
+    K1Checked k1;
+    k1.begin(K1_BEGIN_MS);
+    uint64_t t = K1_BEGIN_MS;
+    TEST_ASSERT_TRUE(k1.requestPulse(K1Direction::Close, 1000, t));
+    stepTo(k1, t, t + 100);
+    TEST_ASSERT_EQUAL_UINT32(1, k1.runStarts());
+    k1.begin(t + 5000);
+    TEST_ASSERT_EQUAL_UINT32(0, k1.runStarts());
+}
+
 // Runs every test in this suite. Call from runHwSuite().
 inline void runK1DriverSuite() {
     RUN_TEST(k1_test_idle_rest_after_begin);
@@ -311,4 +414,10 @@ inline void runK1DriverSuite() {
     RUN_TEST(k1_test_invalid_duration_rejected);
     RUN_TEST(k1_test_long_run_132s_exact_to_tick);
     RUN_TEST(k1_test_owner_and_motion_tracking);
+    RUN_TEST(k1_test_run_starts_counts_at_power_on_not_request);
+    RUN_TEST(k1_test_run_starts_same_direction_extension_not_counted);
+    RUN_TEST(k1_test_run_starts_reversal_counts_again);
+    RUN_TEST(k1_test_run_starts_cancel_then_new_pulse_counts);
+    RUN_TEST(k1_test_run_starts_replaced_pending_counted_once);
+    RUN_TEST(k1_test_run_starts_zeroed_by_begin);
 }
