@@ -1,0 +1,78 @@
+# Home Assistant automation: copy the home-heating "No need" state to the
+# boiler-room "Home: no need" switch (stage 08, plan D23).
+#
+# Purpose
+#   The home-heating controller publishes binary_sensor "No need" (ON when the
+#   house needs no heat from the boiler room: heating pump P4 off and its off
+#   delay elapsed, DHW valve K2 in bypass, all of H1..H4 known, H3 not failed).
+#   The boiler-room controller reads its "Home: no need" switch (setting
+#   homeNoNeed) to stop P3. The two controllers never talk directly; this
+#   automation is the only link between them.
+#
+# Why this is NOT an edge-only copy (stage-07 carry-over)
+#   When the boiler room OFFERs heat it clears "Home: no need" by itself
+#   (self-clear on OFFER entry) and runs P3 for the offer window. If the house
+#   still needs no heat, the flag must be set again, otherwise P3 stays ON.
+#   So the automation always writes the home sensor's CURRENT state, and runs:
+#     (a) on any state change of the home binary_sensor,
+#     (b) on any state change of the boiler-room switch: it turning off
+#         re-asserts after the self-clear, and it leaving "unavailable" /
+#         "unknown" (boiler room rebooted, MQTT reconnected, HA started)
+#         corrects a stale persisted flag at once instead of within 5 min,
+#     (c) when Home Assistant starts,
+#     (d) every 5 minutes (catches anything missed: reconnects, restarts).
+#
+# Unavailable / unknown home sensor (assumption A3)
+#   "no need" is set ON only when the home sensor is exactly "on". If it is
+#   "off", "unavailable" or "unknown" (home controller offline, MQTT down,
+#   HA just started) the boiler-room switch is turned OFF, so the boiler room
+#   keeps supplying heat (fail toward supplying).
+#
+# Writes only when needed
+#   The switch is commanded only when its state differs from the desired one,
+#   so the periodic trigger causes no redundant MQTT writes or NVS saves, and
+#   the switch change caused by our own write re-runs the automation once
+#   with nothing left to do (no command loop). The
+#   switch is not commanded while it is itself unavailable (boiler room
+#   offline); the next trigger after it comes back fixes it.
+#
+# Adjust the entity IDs
+#   The defaults below are what HA normally generates from the device names
+#   "Home heating" and "Boiler room". If your entities have different IDs (see
+#   Settings -> Devices & services -> MQTT -> the device -> entity settings),
+#   change home_sensor and boiler_switch in "variables" AND the two entity_id
+#   values under "trigger" (HA templates cannot be used in state triggers).
+#
+# Install: Settings -> Automations -> Create -> Edit in YAML, paste everything
+# below this header (from "alias:"), save. Or add it to automations.yaml as a
+# list item (prefix "alias:" with "- " and indent the rest).
+
+alias: "Heating: copy home no-need to boiler room"
+description: >-
+  Keeps the boiler-room "Home: no need" switch equal to the home-heating
+  "No need" sensor. Unavailable/unknown home sensor -> switch OFF.
+mode: queued
+max: 10
+trigger:
+  - platform: state
+    entity_id: binary_sensor.home_heating_no_need   # adjust (home sensor)
+  - platform: state
+    entity_id: switch.boiler_room_home_no_need      # adjust (boiler-room switch)
+    to: null   # any state change (incl. back from unavailable), no attribute-only changes
+  - platform: homeassistant
+    event: start
+  - platform: time_pattern
+    minutes: "/5"
+variables:
+  home_sensor: binary_sensor.home_heating_no_need   # adjust (home sensor)
+  boiler_switch: switch.boiler_room_home_no_need    # adjust (boiler-room switch)
+  desired: "{{ 'on' if is_state(home_sensor, 'on') else 'off' }}"
+condition:
+  - condition: template
+    value_template: "{{ states(boiler_switch) in ['on', 'off'] }}"
+  - condition: template
+    value_template: "{{ states(boiler_switch) != desired }}"
+action:
+  - service: "switch.turn_{{ desired }}"
+    target:
+      entity_id: "{{ boiler_switch }}"

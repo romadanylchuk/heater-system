@@ -4,6 +4,7 @@
 #include <CommonSettings.h>
 #include <ConfigSchema.h>
 #include <DisplaySettings.h>
+#include <HomeHeatingControlSettings.h>
 #include <HwSettings.h>
 #include <SettingDescriptor.h>
 
@@ -11,9 +12,10 @@
 // lock + anti-seize interval/time/duration, stage 03), and home-heating's own
 // table -- the persisted HA switch "heatingEnabled" (home-heating P4: OFF -> P4
 // OFF and K1 closed; default ON), the H1..H4 sensor-address mappings and the
-// P4/K2/K1 anti-seize enables. Real controller settings/AppState land in stage
-// 08. Nothing is deployed yet, so the config version stays 1: the HW table and
-// the new project keys are purely additive, and
+// P4/K2/K1 anti-seize enables -- then the OLED display table and the stage-08
+// controller settings table (HomeHeatingEngine). Nothing is deployed yet, so
+// the config version stays 1: the HW table, the new project keys and the
+// appended display/controller tables are purely additive, and
 // HomeHeatingSetting::HeatingEnabled shifts from index COMMON_SETTING_COUNT to
 // HW_SETTINGS_END, which only reads through the enum, never a stored literal.
 constexpr uint16_t HOME_HEATING_CONFIG_VERSION = 1;
@@ -41,9 +43,12 @@ inline constexpr SettingDescriptor HOME_HEATING_SETTINGS[] = {
     boolSetting("asEnK1", "asEnK1", "Anti-seize K1", "Антизаклинювання K1", "antiSeize", true),
 };
 
-// The display table (stage 06) is appended LAST so project enum indices never
-// shift; purely additive, config version unchanged, no migration.
-inline constexpr SettingsTable HOME_HEATING_TABLES[] = {
-    COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE, makeTable(HOME_HEATING_SETTINGS), DISPLAY_SETTINGS_TABLE};
+// The display table (stage 06) is appended after the project table so project
+// enum indices never shift. The controller settings table (stage 08,
+// HomeHeatingEngine) is appended LAST (tables[4], D19): purely additive
+// (missing NVS keys load their defaults), so the config version is unchanged
+// and there is no migration.
+inline constexpr SettingsTable HOME_HEATING_TABLES[] = {COMMON_SETTINGS_TABLE, HW_SETTINGS_TABLE,
+    makeTable(HOME_HEATING_SETTINGS), DISPLAY_SETTINGS_TABLE, HOME_HEATING_CONTROL_SETTINGS_TABLE};
 inline constexpr ConfigSchema HOME_HEATING_SCHEMA = {
-    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 4, nullptr, 0};
+    "home-heating", HOME_HEATING_CONFIG_VERSION, HOME_HEATING_TABLES, 5, nullptr, 0};

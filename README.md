@@ -27,7 +27,8 @@ heater-system/
 │   └── test/                   CommonSuite.h — native tests shared by both projects
 ├── boiler-room/                PlatformIO project (src/, web/, test/)
 │   └── lib/BoilerRoomEngine/   pure, native-testable pump controller + views (see "Boiler-room controller" below)
-└── home-heating/                PlatformIO project (src/, web/, test/)
+└── home-heating/               PlatformIO project (src/, web/, test/)
+    └── lib/HomeHeatingEngine/  pure, native-testable P4/K2/K1 controller + views (see "Home-heating controller" below)
 ```
 
 ## Core engine (stage 02)
@@ -910,6 +911,264 @@ None of these has been run on a real board yet.
       shows `~` and `energy_estimated` turns ON.
 - [ ] **Watchdog.** Let the controller run for several hours with pages rotating and HA connected.
       There are no watchdog resets, and the `debug` loop timing stays well under 100 ms.
+
+## Home-heating controller (stage 08)
+
+The `home-heating` firmware runs the heating pump **P4**, the DHW diverter **K2** (R1 relay: de-energised =
+**TANK**, energised = **BYPASS**) and the radiator mixing valve **K1** (3-point motor valve, ~120 s full
+travel, no position feedback). It also computes the **"no need"** signal that HA copies to the boiler room.
+The logic lives in the project-local library `home-heating/lib/HomeHeatingEngine`. Like stage 07, it is pure
+C++ with no `Arduino.h`, `Wire.h`, `millis()`, NVS or network calls. Time is injected as monotonic ms, and the
+whole library, including the runtime adapter and the views, is native-tested.
+
+- `P4Logic`, `K2Logic`, `NoNeed`, `K1Math` (position estimate, feed-forward target, move planners) and
+  `K1Logic` (the K1 state machine) are small pure units. `HomeHeatingController::update()` combines them in
+  the order: classify sensors → fail mode → P4 → K1 → K2 → no-need → alarms.
+- `HomeHeatingRuntime` is the adapter. It reads `CommonState` and the settings, drives P4/K2 through the
+  `RelayBank` **control slot** and K1 only through `K1Driver::requestPulse(..., K1Owner::Control)`. It
+  integrates `K1Driver::takeMotion()`, sets the anti-seize K1 stroke length, writes the status slice
+  (`HomeHeatingStatus`), owns alarm bits 0–23 and logs the controller events.
+- **Control never depends on Wi-Fi, MQTT or HA.** "No need" is only an output.
+- The **loop order** in the ~1 s slow block is `core.tick(); hw.tick(); ctl.tick(); net.tick(); web.tick();`
+  (same as stage 07). `setup()` still starts with `Wire.begin` + `RelayBoot::forceAllOff`, and `ctl.begin()`
+  runs after `hw.begin(Wire)`.
+
+H1 is the radiator return (K1 port 2), H2 the radiator supply after P4 (the controlled value, `h2Set`), H3 the
+hot supply in from the boiler room (K1 port 3), H4 the DHW tank. All thresholds are settings (table below).
+
+### P4 heating pump
+
+First matching rule wins:
+
+| # | Condition | P4 | Reason |
+|---|-----------|----|--------|
+| 1 | heating disabled (`heatingEnabled` off) | OFF | `heating_off` |
+| 2 | H3 failed, fail mode Multi | OFF | `multi_fault_off` |
+| 2 | H3 failed, otherwise | **ON** (forced) | `h3_fault` |
+| 3 | H3 unknown (pending) | OFF at once | `sensor_wait` |
+| 4 | two or more of H1–H3 failed, H3 Ok (D12) | **ON** (forced) | `multi_fault` |
+| 5 | `H3 ≥ h2Set` | ON | `demand` |
+| 6 | was ON and the last demand is less than `p4OffDelay` min ago | ON | `off_delay` |
+| 7 | otherwise | OFF | `supply_cold` |
+
+Every ON rule except `off_delay` counts as demand and restarts the off delay. The delay also counts from boot.
+
+### K1 mixing valve
+
+- **Position estimate.** No feedback exists, so the controller integrates the actual power-ON time per
+  direction reported by `K1Driver::takeMotion()` (any owner, including anti-seize strokes and cancelled or
+  partial runs), clamped to 0–100 %. It is unknown at boot.
+- **Recalibration.** A CLOSE of `k1Travel × (1 + k1Resync/100)` (default 132 s) sets the estimate to 0 %. It runs
+  at boot (regardless of heating), when the P4 request falls, and when heating is disabled. Completion is
+  measured by the actual CLOSE time, so an OTA cancel or an anti-seize stroke can never fake it; any OPEN
+  motion during recal restarts the count. Recal replaces a running control pulse, never an anti-seize stroke.
+  K1 control starts only after recal ends.
+- **K1 needs P4 actually running** (request ON and relay ON, D10). While the relay lock delays a P4 start, K1
+  stays closed.
+- **Feed-forward (FF).** `x = (h2Set − H1) / (H3 − H1) × 100 %`, clamped; when `H3 − H1 ≤ k1SmallDiff`
+  (including negative) → 100 %. FF is applied as one move when it is first needed (P4 start, mode entry, end
+  of an OTA inhibit) and whenever `x` has moved by `k1FfStep` % or more since the last FF (A1). That period
+  skips feedback.
+- **Feedback.** Every `k1Period` s, with K1 idle: `err = h2Set − H2`; inside `k1Deadband` → no move; else a
+  pulse of `min(k1Gain × |err|, k1MaxPulse)` s, OPEN when H2 is too cold, CLOSE when too hot. Feedback trims
+  persist between FF moves. A busy K1 defers the evaluation (periods never stack).
+- **End-stop resync.** Any move that ends at 0 % or 100 % adds `k1Resync` % of travel. A move toward an end
+  the estimate already sits at is skipped (no endless pulses when H2 stays low at 100 %).
+- **Minimum pulse.** Moves shorter than `k1MinPulse` s are skipped (FF and feedback alike).
+- **OTA.** No K1 commands while the relays are inhibited. The cancelled part of a run counts as real motion.
+  After the inhibit FF is re-applied and an unfinished recal resumes.
+- **Anti-seize.** The K1 anti-seize stroke length is set to the recal time (`setK1StrokeMs`) whenever the
+  setting changes; the estimate follows the stroke.
+
+K1 modes (`k1_mode`): `recal`, `closed` (heating off, or P4 not running), `wait` (a needed sensor is pending:
+hold position), `normal` (FF + feedback), `fb_only`, `ff_only`, `failpos_fb`, `failpos_fixed`.
+
+### K2 DHW diverter
+
+TANK (charging the DHW tank) only while all three hysteresis latches are true, otherwise BYPASS:
+
+| Latch | Becomes true | Becomes false |
+|-------|--------------|---------------|
+| delta | `H3 > H4 + k2Delta` | `H3 ≤ H4 + k2Delta − k2DeltaHyst` |
+| H3 min | `H3 ≥ k2H3Min` | `H3 < k2H3Min − k2H3MinHyst` |
+| H4 max | `H4 ≤ k2H4Max − k2H4MaxHyst` | `H4 ≥ k2H4Max` |
+
+- Bypass reason priority: `h4_full` → `h3_low` → `delta_low`; TANK reason `charging`.
+- H4 failed → BYPASS `h4_fault`; H3 failed → BYPASS `h3_fault` (D13). H3 or H4 pending → K2 **holds** its
+  previous request (`sensor_wait`; TANK at boot). The latches re-initialise from the first all-Ok reading.
+- K2 is independent of `heatingEnabled`. Guard: `k2DeltaHyst` is limited to `k2Delta − 0.5`.
+
+### "No need" (A2)
+
+"No need" is ON only when **all** of these hold:
+- H1–H4 are all known (none pending);
+- not (heating enabled and H3 failed) — while H3 is faulted, no-need is never sent;
+- K2 requested BYPASS **and** the K2 relay is actually energised;
+- P4 requested OFF **and** the P4 relay is actually OFF **and** the P4 off delay has elapsed.
+
+It turns ON only on actual + requested relays and turns OFF as soon as a request changes. During a P4/K2
+anti-seize exercise the request stands in for the relay, so a 30 s exercise does not flap the signal. During
+OTA all relays drop, so K2 reads TANK and no-need goes OFF (fail toward supplying, accepted).
+
+### Sensor fail-safes (Failed vs Unknown)
+
+- **Failed** = `Fault` **or `Unassigned`** (A4). **Unknown** = `Pending`: P4 OFF `sensor_wait`, K1 `wait`
+  (H1/H2) or closed, K2 holds, no-need OFF, no alarm.
+- Fail mode from H1–H3: two or more failed → **Multi**; else H3, H2, H1 (one failed) or none.
+
+| Condition | P4 | K1 | K2 |
+|-----------|----|----|----|
+| H3 failed | forced ON (`h3_fault`) | moves to `k1FailPos` (30 %), then feedback on H2 (`failpos_fb`) | BYPASS `h3_fault` |
+| H2 failed | normal rule | FF only (`ff_only`) | normal |
+| H1 failed | normal rule | feedback only (`fb_only`) | normal |
+| ≥ 2 of H1–H3 failed, H3 Ok | forced ON (`multi_fault`, D12) | fixed at `k1FailPos` (`failpos_fixed`), even with P4 OFF | normal |
+| ≥ 2 of H1–H3 failed, H3 failed | OFF (`multi_fault_off`) | fixed at `k1FailPos` | BYPASS `h3_fault` |
+| H4 failed | — | — | BYPASS `h4_fault` |
+| heating disabled | OFF (`heating_off`) | closed (alarms stay) | K2 rules still apply |
+| settings missing at boot (`[ctl] settings missing: outputs held off`) | OFF | no command | TANK (relay OFF) |
+
+After a factory reset all four sensors are unassigned: Multi, P4 OFF, K1 at 30 %, K2 BYPASS, alarms 3, 4 and
+8–11 (mask `0x0F18`).
+
+### Relay lock, slots and OTA
+
+- **All home outputs use the control slot with the 60 s min-ON/min-OFF lock (A5)**, including the fail-safe
+  forced ones. Home heating has no heat-removal safety duty, so the safety slot is never used. The exercise
+  slot and the OTA inhibit stay owned by anti-seize and OTA.
+- The K1 relays are driven only by `HwRuntime`'s `K1Driver` (interlocked power + direction).
+
+### Alarm bits and events
+
+The controller owns alarm bits 0–23 and never touches the stage-03 bits 24–31 ("Sensor <name> missing"). A
+sensor condition is alarmed once: bit 24+i when the sensor is missing, otherwise bit 8+i. Fail-mode bits are
+separate, so a missing H3 shows both "Sensor H3 missing" and "H3 fail: K1 fixed". Unknown raises nothing, and
+the alarms do not depend on `heatingEnabled`.
+
+| Bit | Key | Label |
+|-----|-----|-------|
+| 0 | `h3_failsafe` | H3 fail: K1 fixed |
+| 1 | `h2_failsafe` | H2 fail: K1 FF only |
+| 2 | `h1_failsafe` | H1 fail: K1 FB only |
+| 3 | `multi_failsafe` | Sensors fail: K1 fix |
+| 4 | `h4_failsafe` | H4 fail: K2 bypass |
+| 8–11 | `h1_fault` … `h4_fault` | H<n> fault/unassigned (Fault without missing, or Unassigned) |
+
+Events (reason Logic), rate-limited by the existing limiter (60 s per type and source; sources differ per
+target value so an ON→OFF pair is never swallowed):
+
+- `HH_EVENT_P4_REQUEST` (project type 0, value = P4 reason, aux = on) and `HH_EVENT_K2_REQUEST` (type 1,
+  value = K2 reason, aux = bypass) when the request **flips** (not on reason-only changes).
+- `HH_EVENT_FAILSAFE` (type 2, value = new fail mode, aux = old), `HH_EVENT_K1_RECAL` (type 3, 1 start /
+  0 end), `HH_EVENT_NO_NEED` (type 4, new 0/1).
+- Alarm bit edges → `AlarmRaised` / `AlarmCleared` (source `EVENT_SOURCE_ALARM_BASE + bit`). No per-pulse K1
+  events. Actual relay switches are still logged by `RelayBank`.
+- Settings missing at boot → one `DiagnosticWarning` (source `DIAG_BASE + 32`) per boot plus a Serial line.
+
+### Settings (appended as the last table; config version stays 1)
+
+| Key | Group | Range | Default | Meaning |
+|-----|-------|-------|---------|---------|
+| `h2Set` | heating | 30–75 °C (0.5) | 40 | radiator supply setpoint H2 |
+| `p4OffDelay` | heating | 0–60 min | 5 | P4 off delay |
+| `k1Travel` | k1 | 30–300 s | 120 | K1 full travel time |
+| `k1Period` | k1 | 10–300 s | 30 | K1 control period |
+| `k1Deadband` | k1 | 0.2–5 °C (0.1) | 1 | feedback deadband |
+| `k1Gain` | k1 | 0.5–10 s/°C (0.5) | 2 | feedback gain |
+| `k1MaxPulse` | k1 | 1–60 s | 10 | max feedback pulse (guarded ≥ min pulse) |
+| `k1MinPulse` | k1 | 0.5–5 s (0.5) | 1 | min pulse (shorter moves skipped) |
+| `k1Resync` | k1 | 5–25 % | 10 | end-stop overdrive |
+| `k1SmallDiff` | k1 | 0.5–10 °C (0.5) | 2 | K1 fully open if H3 − H1 below |
+| `k1FailPos` | k1 | 0–100 % | 30 | fail-safe position |
+| `k1FfStep` | k1 | 1–25 % | 5 | FF re-apply step |
+| `k2Delta` | k2 | 1–15 °C (0.5) | 3 | DHW: charge if H3 above H4 by |
+| `k2DeltaHyst` | k2 | 0.5–10 °C (0.5) | 2 | differential hysteresis (guarded ≤ `k2Delta` − 0.5) |
+| `k2H3Min` | k2 | 40–80 °C | 65 | DHW: minimum supply H3 |
+| `k2H3MinHyst` | k2 | 1–10 °C (0.5) | 3 | H3 minimum hysteresis |
+| `k2H4Max` | k2 | 40–80 °C | 70 | DHW: tank maximum H4 |
+| `k2H4MaxHyst` | k2 | 1–10 °C (0.5) | 3 | H4 maximum hysteresis |
+
+The existing `heatingEnabled` ("Heating enabled", group `flags`, HA switch) enables heating (P4/K1). No new
+Bool setting was added.
+
+### Home Assistant entities
+
+These come on top of the common entities (H1–H4 temperatures, `relay_p4`, `relay_k2`, the settings including
+the `heating_enabled` switch and the `h2_set` number):
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `no_need` | binary sensor | the "no need" signal (copied to the boiler room by the automation below) |
+| `p4_reason`, `k2_reason` | sensor | reason keys above |
+| `k2_mode` | sensor | `tank` / `bypass` (request) |
+| `k1_position` | sensor, %, `measurement` | whole percent; unavailable while the position is unknown |
+| `k1_mode` | sensor | K1 mode key |
+| `failsafe` | sensor, diagnostic | `none` / `h1` / `h2` / `h3` / `multi` |
+| `alarm_h3_failsafe`, `alarm_h2_failsafe`, `alarm_h1_failsafe`, `alarm_multi_failsafe`, `alarm_h4_failsafe` | binary sensor, `problem` | bits 0–4 |
+| `alarm_h1_fault` … `alarm_h4_fault` | binary sensor, `problem`, diagnostic | bits 8–11 |
+
+The status entities are unavailable until the controller has started (`bindHomeHeatingHaStatus` in `setup()`
+and the first `ctl.tick()`).
+
+### HA automation: home "no need" → boiler room
+
+[`docs/ha-home-no-need-automation.yaml`](docs/ha-home-no-need-automation.yaml) copies the home's **current**
+"No need" state to the boiler-room "Home: no need" switch. It is not edge-only, because the boiler room clears
+that switch by itself when it OFFERs heat (stage 07). It runs on any change of the home sensor, on any state
+change of the boiler-room switch (turning off re-asserts after the self-clear; coming back from `unavailable`
+corrects a stale persisted flag at once), at HA start and every 5 minutes. If the home
+sensor is `unavailable` or `unknown`, the boiler-room switch is turned **OFF** (A3: keep supplying heat). The
+switch is written only when it differs, so there are no redundant MQTT writes and no command loop. The default entity IDs are
+`binary_sensor.home_heating_no_need` and `switch.boiler_room_home_no_need`; adjust them to your HA (see the
+comment in the file).
+
+### OLED pages and `/api/state` "ctl"
+
+- **Pages**, in rotation before Network/Sensors/Alarms:
+  - **Heating**: `H2 41.2 set 40.0`, `H3 70.1`, `K1 35% >` (`>` opening, `<` closing) / `K1 recal` /
+    `K1 ?`, `P4 ON|OFF <reason>` (actual relay), and the fail-mode alarm label when a fail-safe is active.
+  - **DHW**: H3, H4, `K2 TANK|BYP <reason>` (actual relay), `No need: yes|no`.
+  - Temperatures show `--.-` when not Ok; `starting...` until the controller is ready.
+- The Alarms page uses the labels above (bits 0–11).
+- `/api/state` carries a `"ctl"` member (`WebServices::setStateExtension()`), `{"ok":false}` until ready:
+
+```json
+"ctl":{"ok":true,"en":true,"set":40,
+ "p4":{"on":true,"r":"demand","dlyS":0,"as":false},
+ "k2":{"byp":false,"r":"charging","as":false},
+ "k1":{"pos":35,"mv":1,"m":"normal","ff":42,"as":false},
+ "fs":"none","nn":false}
+```
+
+`p4.on`/`k2.byp` are the controller's requests (the actual relays stay in the base `relays[]`); `as` means
+anti-seize is running; `k1.pos` is `null` while unknown and `k1.ff` is `null` until an FF target was applied.
+
+### Home-heating controller checks (hardware only, NOT TESTED)
+
+None of these has been run on a real board yet.
+
+- [ ] **Boot recal.** At power-on all relays stay OFF (`RelayBoot` first). K1 then drives CLOSE for about
+      132 s (`K1 recal` on the Heating page, `k1_mode` = `recal`), after which the position shows `0%`.
+- [ ] **P4 start after the lock.** With H3 ≥ `h2Set`, P4 switches ON only after the 60 s boot relay lock;
+      K1 stays closed until the P4 relay is actually ON, then makes one FF move and trims every `k1Period` s.
+- [ ] **H3 fail-safe.** Unplug H3: P4 forced ON (`h3_fault`, respecting the lock), K1 moves to 30 % and then
+      follows H2, K2 goes BYPASS, "Sensor H3 missing" and "H3 fail: K1 fixed" are shown, no-need stays OFF.
+- [ ] **H4 fail-safe.** Unplug H4: K2 goes BYPASS (`h4_fault`) and "H4 fail: K2 bypass" is raised.
+- [ ] **Heating off.** Turn `heating_enabled` off: P4 goes OFF (after the lock), K1 recalibrates and stays
+      closed; alarms, if any, stay.
+- [ ] **No need.** With heating off (or H3 < `h2Set`) and K2 in BYPASS (e.g. tank full), `no_need` turns ON
+      in HA once P4 is off and `p4OffDelay` (5) min have passed since the last demand, and turns OFF as soon
+      as P4 ON or K2 TANK is requested.
+- [ ] **Automation round-trip.** With the YAML installed, the boiler-room "Home: no need" switch follows
+      `no_need`. When the boiler room OFFERs and clears the switch, the automation sets it again within
+      seconds while the home still has no need. Power off the home controller: the switch turns OFF.
+- [ ] **OTA.** During an OTA update all relays drop and K1 stops; afterwards FF is re-applied and an
+      unfinished recal resumes; the position estimate stays plausible.
+- [ ] **Anti-seize.** A K1 anti-seize stroke moves the position estimate; P4/K2 exercises do not flap
+      `no_need`.
+- [ ] **Pages.** The Heating and DHW pages rotate before Network and Sensors, update live, no row is
+      clipped, and every raised alarm shows its label on the Alarms page.
+- [ ] **Watchdog.** Several hours of running with pages rotating and HA connected: no watchdog resets, and
+      the `debug` loop timing stays well under 100 ms.
 
 ## Prerequisites
 

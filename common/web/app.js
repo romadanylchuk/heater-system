@@ -779,12 +779,20 @@ var App = (function () {
     return [el('div', 'grid-3', [up, netCard, relCard]), senCard];
   }
 
+  // D22: optional 4th PROJECT.render argument. Widgets write a setting through
+  // the same POST /api/config command flow as the Settings page (session,
+  // CSRF, 202 + /api/cmd poll); resolves like command(). Widgets that take
+  // only three arguments simply ignore it.
+  var SLOT_API = {
+    setConfig: function (key, value) { return command('/api/config', { key: key, value: value }); }
+  };
+
   function statusSlots(v, st) {
     var proj = window.PROJECT;
     if (!proj || typeof proj.render !== 'function') return;
     v.querySelectorAll('.slot[data-slot]').forEach(function (slot) {
       try {
-        proj.render(slot.getAttribute('data-slot'), slot, st);
+        proj.render(slot.getAttribute('data-slot'), slot, st, SLOT_API);
       } catch (e) { /* a widget bug must not break the page */ }
     });
   }

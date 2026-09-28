@@ -1,0 +1,7 @@
+{
+  "name": "HomeHeatingEngine",
+  "version": "0.1.0",
+  "description": "Pure home-heating controller logic (P4 pump, K2 DHW diverter, K1 mixing valve, no-need signal, fail-safes, alarms); no hardware, time injected; native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

@@ -6,6 +6,7 @@
 #include <EventLog.h>
 #include <HaDiscovery.h>
 #include <HaEntityRegistry.h>
+#include <HomeHeatingControlSettings.h>
 #include <HwConfig.h>
 #include <HwRuntime.h>
 #include <HwSettings.h>
@@ -246,6 +247,118 @@ static void test_display_settings_resolve_in_schema() {
     TEST_ASSERT_TRUE(findHaKey(reg, "disp_bright") >= 0);
 }
 
+// Stage 08: the controller settings table is appended LAST (tables[4]).
+static void test_control_table_is_last() {
+    TEST_ASSERT_EQUAL_UINT32(5, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tableCount));
+    TEST_ASSERT_EQUAL_PTR(HOME_HEATING_CONTROL_SETTINGS, HOME_HEATING_SCHEMA.tables[4].items);
+    TEST_ASSERT_EQUAL_UINT32(
+        HOME_HEATING_CONTROL_SETTING_COUNT, static_cast<uint32_t>(HOME_HEATING_SCHEMA.tables[4].count));
+    TEST_ASSERT_EQUAL_UINT16(1, HOME_HEATING_CONFIG_VERSION);
+
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
+
+    size_t total = 0;
+    for (size_t t = 0; t < HOME_HEATING_SCHEMA.tableCount; ++t) {
+        total += HOME_HEATING_SCHEMA.tables[t].count;
+    }
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(total), static_cast<uint32_t>(config.count()));
+
+    // Earlier indices did not move.
+    const SettingDescriptor* first = config.descriptor(static_cast<size_t>(HomeHeatingSetting::HeatingEnabled));
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_EQUAL_STRING("heatingEnabled", first->key);
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(HomeHeatingSetting::HeatingEnabled), config.indexOf(HH_KEY_HEATING_ENABLED));
+    TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_ROTATE_S) >= 0);
+    TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_BRIGHTNESS) >= 0);
+    TEST_ASSERT_TRUE(config.indexOf(DISPLAY_KEY_ROTATE_S) < config.indexOf(HH_KEY_H2_SET));
+}
+
+// The plan's C2 table (literal values): key, type, min, max, default.
+struct ControlKeyExpectation {
+    const char* key;
+    SettingType type;
+    float min;
+    float max;
+    float def;
+};
+
+static void test_control_keys_min_max() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
+
+    const ControlKeyExpectation expected[] = {
+        {HH_KEY_H2_SET, SettingType::Float, 30, 75, 40},
+        {HH_KEY_P4_OFF_DELAY, SettingType::Int, 0, 60, 5},
+        {HH_KEY_K1_TRAVEL, SettingType::Int, 30, 300, 120},
+        {HH_KEY_K1_PERIOD, SettingType::Int, 10, 300, 30},
+        {HH_KEY_K1_DEADBAND, SettingType::Float, 0.2f, 5, 1},
+        {HH_KEY_K1_GAIN, SettingType::Float, 0.5f, 10, 2},
+        {HH_KEY_K1_MAX_PULSE, SettingType::Int, 1, 60, 10},
+        {HH_KEY_K1_MIN_PULSE, SettingType::Float, 0.5f, 5, 1},
+        {HH_KEY_K1_RESYNC, SettingType::Int, 5, 25, 10},
+        {HH_KEY_K1_SMALL_DIFF, SettingType::Float, 0.5f, 10, 2},
+        {HH_KEY_K1_FAIL_POS, SettingType::Int, 0, 100, 30},
+        {HH_KEY_K1_FF_STEP, SettingType::Int, 1, 25, 5},
+        {HH_KEY_K2_DELTA, SettingType::Float, 1, 15, 3},
+        {HH_KEY_K2_DELTA_HYST, SettingType::Float, 0.5f, 10, 2},
+        {HH_KEY_K2_H3_MIN, SettingType::Int, 40, 80, 65},
+        {HH_KEY_K2_H3_MIN_HYST, SettingType::Float, 1, 10, 3},
+        {HH_KEY_K2_H4_MAX, SettingType::Int, 40, 80, 70},
+        {HH_KEY_K2_H4_MAX_HYST, SettingType::Float, 1, 10, 3},
+    };
+    TEST_ASSERT_EQUAL_UINT32(HOME_HEATING_CONTROL_SETTING_COUNT, sizeof(expected) / sizeof(expected[0]));
+    for (const ControlKeyExpectation& e : expected) {
+        int idx = config.indexOf(e.key);
+        TEST_ASSERT_TRUE_MESSAGE(idx >= 0, e.key);
+        const size_t i = static_cast<size_t>(idx);
+        const SettingDescriptor* d = config.descriptor(i);
+        TEST_ASSERT_NOT_NULL_MESSAGE(d, e.key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(e.type), static_cast<int>(d->type), e.key);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(e.key, d->nvsKey, e.key);  // key == nvsKey
+        TEST_ASSERT_TRUE_MESSAGE(strlen(d->nvsKey) <= 15, e.key);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(e.min, d->minValue, e.key);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(e.max, d->maxValue, e.key);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(e.def, config.getNumber(i), e.key);
+
+        // Out-of-range writes clamp to the row's bounds.
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(ConfigStatus::Clamped),
+            static_cast<int>(config.setNumber(i, e.max + 100.0f, EventReason::Web, 0)), e.key);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(e.max, config.getNumber(i), e.key);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(ConfigStatus::Clamped),
+            static_cast<int>(config.setNumber(i, e.min - 100.0f, EventReason::Web, 0)), e.key);
+        TEST_ASSERT_EQUAL_FLOAT_MESSAGE(e.min, config.getNumber(i), e.key);
+    }
+}
+
+static void test_control_settings_ha_entities() {
+    MemoryKvStore cfgStore, logStore;
+    FakeClock clock;
+    EventLog log(logStore, clock);
+    TEST_ASSERT_TRUE(log.begin());
+    ConfigEngine config(cfgStore, log);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigStatus::Ok), static_cast<int>(config.begin(HOME_HEATING_SCHEMA, 0)));
+    HaEntityRegistry reg;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaRegistryStatus::Ok),
+        static_cast<int>(reg.build(config, HOME_HEATING_HW, nullptr, 0)));
+    TEST_ASSERT_TRUE(reg.count() <= HA_MAX_ENTITIES);
+
+    int h2 = findHaKey(reg, "h2_set");
+    TEST_ASSERT_TRUE(h2 >= 0);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HaComponent::Number), static_cast<int>(reg.entity(h2).component));
+    TEST_ASSERT_TRUE(findHaKey(reg, "k2_h4_max_hyst") >= 0);
+    TEST_ASSERT_TRUE(findHaKey(reg, "k1_ff_step") >= 0);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_relay_channel_count_is_six);
@@ -258,5 +371,8 @@ int main() {
     RUN_TEST(test_ha_registry_builds_for_project);
     RUN_TEST(test_discovery_payloads_fit);
     RUN_TEST(test_display_settings_resolve_in_schema);
+    RUN_TEST(test_control_table_is_last);
+    RUN_TEST(test_control_keys_min_max);
+    RUN_TEST(test_control_settings_ha_entities);
     return UNITY_END();
 }
