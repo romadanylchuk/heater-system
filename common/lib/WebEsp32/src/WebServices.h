@@ -54,6 +54,10 @@ public:
     void tick();       // ~1 s, after net.tick(): snapshots, backup export, flags, captive start/stop
     void fastTick();   // ~100 ms, after net.fastTick(): captive DNS poll
 
+    // Loop task / setup() only. nullptr disables (stage-05 behaviour). Adds the
+    // controller's "ctl" member to /api/state in rebuildSnapshots().
+    void setStateExtension(StateJsonExtension fn, void* ctx);
+
 private:
     static constexpr uint64_t LOG_REBUILD_MS = 60000;
 
@@ -129,4 +133,6 @@ private:
     bool _sensorsFailed = false;
     bool _configFailed = false;
     bool _logFailed = false;
+    StateJsonExtension _stateExt = nullptr;   // loop task / setup() only
+    void* _stateExtCtx = nullptr;
 };

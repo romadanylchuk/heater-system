@@ -1,0 +1,7 @@
+{
+  "name": "BoilerRoomEngine",
+  "version": "0.1.0",
+  "description": "Pure boiler-room controller logic (P1/P2/P3, overheat, fail-safes, stored energy, alarms); no hardware, time injected; native-testable",
+  "platforms": "*",
+  "frameworks": "*"
+}

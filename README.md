@@ -26,6 +26,7 @@ heater-system/
 │   ├── scripts/                PlatformIO pre-scripts (fw_version.py, web_assemble.py)
 │   └── test/                   CommonSuite.h — native tests shared by both projects
 ├── boiler-room/                PlatformIO project (src/, web/, test/)
+│   └── lib/BoilerRoomEngine/   pure, native-testable pump controller + views (see "Boiler-room controller" below)
 └── home-heating/                PlatformIO project (src/, web/, test/)
 ```
 
@@ -655,6 +656,260 @@ display.addPage({"T1", renderT1Page, &ctx});  // in setup(), BEFORE display.begi
 - To get real alarm labels, pass an `AlarmDescriptor` table **indexed by alarm bit** (entry `i` =
   bit `i`, `i < 24`) to the `DisplayServices` constructor. Bits 24–31 are always shown as
   "Sensor <name> missing".
+
+## Boiler-room controller (stage 07)
+
+The `boiler-room` firmware runs the three pumps: **P1** (boiler → accumulator charging), **P2**
+(boiler return protection) and **P3** (supply to the house). The logic lives in the project-local
+library `boiler-room/lib/BoilerRoomEngine`. It is pure C++ with no `Arduino.h`, `Wire.h`,
+`millis()`, NVS or network calls. Time is injected as monotonic ms, and the whole library, including
+the runtime adapter and the views, is native-tested.
+
+- `BoilerLoopLogic` handles the overheat latch, P1 and P2. `SupplyLogic` holds the P3 state machine,
+  anti-freeze and the overheat dump. `computeStoredEnergy` gives the stored energy.
+  `BoilerRoomController::update()` combines them.
+- `BoilerRoomRuntime` is the adapter. It reads `CommonState`, the settings and the gated
+  "Home: no need" flag. It maps each pump decision onto the `RelayBank` slots and writes the
+  controller status slice (`BoilerRoomStatus`) and alarm bits 0–23. It also self-clears the flag
+  and logs events.
+- **Control never depends on Wi-Fi, MQTT or HA.** The only network input is the "Home: no need"
+  flag, and it only ever reaches the logic through `haGatedFlag()`. While MQTT is down, the flag
+  is ignored and P3 runs NORMAL.
+- The **loop order** in the ~1 s slow block is `core.tick(); hw.tick(); ctl.tick(); net.tick();
+  web.tick();`. The controller decides on this pass's sensor data, and HA and web publish the new
+  status in the same pass. Relay requests reach the port at the next `hw.fastTick()`, within
+  100 ms. `setup()` still starts with `Wire.begin` + `RelayBoot::forceAllOff`, so all relays are
+  OFF at boot.
+
+### Pump rules
+
+T1 is the boiler flow, T2 the boiler return, T3/T4/T5 the accumulator top/middle/bottom, and T6
+the supply (diagnostic). All thresholds are settings (see the table below).
+
+| Pump | Normal rule (control slot, lock applies) | Hysteresis / notes |
+|------|------------------------------------------|--------------------|
+| P1 | ON when `T1 > T3 + p1DeltaOn` **and** `T1 > p1T1Min` | OFF when `T1 < T3 + p1DeltaOff` or `T1 < p1T1Min − p1Hyst` |
+| P1 (T3 failed) | ON when `T1 > p1T1Min` (reason `charge_t1`) | OFF when `T1 < p1T1Min − p1Hyst` |
+| P2 | ON when `T2 < p2T2Off − p2Hyst` **and** the boiler is burning | OFF when `T2 ≥ p2T2Off` or burning ends |
+| P2 (T1 failed) | ON when `T2 < p2T2Off − p2Hyst` (reason `return_t2`) | OFF when `T2 ≥ p2T2Off` |
+| P2 (T2 failed) | ON while the boiler is burning (reason `burn_gate`) | — |
+| P3 | the NORMAL/OFF/OFFER state machine (below) | — |
+
+- **Burning** is a latch: set at `T1 > p2T1Burn`, cleared at `T1 < p2T1Burn − p2Hyst`, and
+  false whenever T1 is not Ok.
+- **Overheat** is a latch: set at `T1 > ohOn`, cleared at `T1 < ohClear`. While it is set, **P1 is
+  forced ON** and **P3 runs the heat dump**, both on the safety slot. The "Home: no need" flag is
+  left untouched.
+- **Ordering guard.** Every tick, `p1DeltaOff` is limited to `p1DeltaOn − 0.5` and `ohClear` to
+  `ohOn − 1`, so a band can never invert. The web UI shows the stored raw values.
+- **Rule continuity.** Rule states keep their hysteresis while a safety state overrides the output.
+  After an overheat clears, P1 continues from its real rule state.
+
+### Sensor fail-safes (Failed vs Unknown)
+
+- **Failed** is a sensor in `Fault` **or `Unassigned`**. An unassigned sensor counts as not working.
+- **Unknown** (`Pending`, the first seconds after boot or a reassignment) means **hold**: any pump
+  whose rule needs that sensor stays OFF on the control slot (reason `wait`) and no alarm is raised.
+  A pending T3 makes P3 NORMAL.
+
+| Condition | Result | Slot |
+|-----------|--------|------|
+| T1 failed | P1 forced ON (`t1_fault`); P3 is **not** forced | safety |
+| T1 + T2 failed | P2 forced ON (`t1t2_fault`) | safety |
+| T2 failed | P2 follows the burning latch (`burn_gate`) | control |
+| T1 failed, T2 Ok | P2 uses the T2-only rule (`return_t2`) | control |
+| T3 failed | P1 uses the T1-only rule; P3 stays NORMAL (no offer) | control |
+| T1 pending during an overheat | the latch is **held** until T1 is Ok again | — |
+| T1 failed during an overheat | the latch clears; P1 stays forced through `t1_fault` and the dump ends | — |
+| settings missing at boot (`[ctl] settings missing`) | P1 safety ON, P2/P3 OFF, status not ready | safety |
+
+### Relay lock vs bypass
+
+The **safety** slot bypasses the relay min-ON/min-OFF lock. It is used **only** by `overheat` (P1),
+`t1_fault` (P1), `t1t2_fault` (P2), `anti_freeze` (P3) and `dump` (P3). Every other state, including
+`return_t2`, goes through the **control** slot and respects the lock. On each tick the control slot
+already holds the normal request underneath, so when a safety state ends, the lock governs the
+switch back. The exercise slot stays owned by anti-seize.
+
+### P3 supply: NORMAL / OFF / OFFER
+
+The house controller (via HA) sets the "Home: no need" flag (`homeNoNeed`) when it needs no heat.
+
+- **Gates** (checked first, from any mode): MQTT down or T3 not Ok → **NORMAL**. A running offer
+  window is abandoned, the flag is not cleared, and an armed wait keeps counting.
+- **NORMAL** → **OFF** when the flag is set.
+- **OFF** → **NORMAL** when the flag is cleared (the house needs heat again).
+- **OFF** → **OFFER** when `T3 ≥ p3T3Offer`, the wait has elapsed and there is no overheat. On
+  entry, the controller **clears the flag itself** (once per OFFER entry, `ConfigChanged` with reason
+  Logic) and P3 runs.
+- **OFFER** → **OFF** when the `p3OfferWin` window ends and the flag is set again. This arms the
+  `p3OfferWait` wait. If the flag is still cleared when the window ends → **NORMAL**.
+- The wait is armed **only** on OFFER → OFF. `p3OfferWait = 0` means no wait. An armed wait is not
+  restarted or cancelled by NORMAL or by an MQTT loss.
+- **During the overheat dump** the state machine keeps running and its timers count in wall time.
+  Only OFF → OFFER is suppressed while overheat is latched. After the clear, P3 returns to the
+  state-machine output (OFF with the flag still set), and the next tick may enter OFFER.
+- After a reboot, MQTT is not connected yet, so P3 starts NORMAL.
+
+> **HA automation note.** The controller clears "Home: no need" when it makes an offer. If the house
+> still needs no heat, **the HA automation must set "no need" again** after the controller clears
+> it, otherwise P3 stays ON. The offer then ends with the window, and the next offer waits
+> `p3OfferWait` minutes.
+
+### Anti-freeze
+
+- When `afEnable` is on and the P3 relay has been **actually OFF** for `afInterval` minutes, P3 runs
+  for `afDuration` seconds on the safety slot (an `AntiFreezeRun` event is logged).
+- The idle timer is **shared**. It is derived from the P3 relay's last ON time, so any P3 run
+  resets it: NORMAL, OFFER, the dump, anti-freeze or anti-seize. After a reboot it counts from
+  boot, so the relay reads as "just ran" (accepted).
+- Turning `afEnable` off stops a run at once. When a run ends, the control slot holds the
+  state-machine output; if the min-ON lock is longer than the run, P3 stays ON until the lock
+  expires.
+- `afEnable` is a Bool in group `flags` with an HA switch, next to "Home: no need" on the Modes tab.
+
+### Stored energy
+
+`E = V · 1.163 · (avg − accTBase) / 1000` kWh, averaged over the accumulator layers T3/T4/T5 whose
+state is Ok, and clamped at ≥ 0. With all three layers it is **exact**. With one or two it is
+**estimated** (`~` on the OLED, `energy_estimated` ON in HA). With none it is **n/a**: JSON `null`,
+HA unavailable, never 0. A pending layer counts as not working.
+
+### Alarm bits and events
+
+The controller owns alarm bits 0–23 and never touches the stage-03 bits 24–31 ("Sensor <name>
+missing"). A sensor condition is alarmed once: bit 24+i when the sensor is missing, otherwise
+bit 8+i.
+
+| Bit | Key | Label |
+|-----|-----|-------|
+| 0 | `overheat` | Boiler overheat |
+| 1 | `t1_failsafe` | T1 fail: P1 forced |
+| 2 | `t1t2_failsafe` | T1+T2 fail: P2 forced |
+| 3 | `t2_failsafe` | T2 fail: P2 burn gate |
+| 4 | `t3_failsafe` | T3 fail: no offer |
+| 8–13 | `t1_fault` … `t6_fault` | T<n> fault/unassigned (Fault without missing, or Unassigned) |
+
+Events are rate-limited by the existing limiter (60 s per type and source):
+
+- Alarm bit edges are logged as `AlarmRaised` / `AlarmCleared` (source `EVENT_SOURCE_ALARM_BASE +
+  bit`).
+- `BR_EVENT_P3_MODE` (project type 0) is logged on each P3 mode change; the source differs per
+  target mode.
+- `BR_EVENT_PUMP_REQUEST` (project type 1, source = relay channel) is logged when a pump's requested
+  ON or safety flips.
+- `AntiFreezeRun` is logged at each anti-freeze start.
+- The flag self-clear is logged by the settings engine as `ConfigChanged` (reason Logic).
+- Actual relay switches are still logged by `RelayBank`.
+
+### Settings (appended as the last table; config version stays 1)
+
+| Key | Group | Range | Default | Meaning |
+|-----|-------|-------|---------|---------|
+| `p1DeltaOn` | p1 | 2–20 °C (0.5) | 5 | P1 ON differential T1 − T3 |
+| `p1DeltaOff` | p1 | 0–15 °C (0.5) | 2 | P1 OFF differential (guarded ≤ ON − 0.5) |
+| `p1T1Min` | p1 | 40–80 °C | 60 | P1 minimum T1 |
+| `p1Hyst` | p1 | 1–10 °C (0.5) | 2 | T1_min hysteresis |
+| `ohOn` | p1 | 80–95 °C | 90 | overheat above |
+| `ohClear` | p1 | 70–94 °C | 87 | overheat clears below (guarded ≤ ohOn − 1) |
+| `p2T2Off` | p2 | 55–65 °C | 60 | P2 OFF at return T2 |
+| `p2Hyst` | p2 | 1–5 °C (0.5) | 3 | P2 and burning-latch hysteresis |
+| `p2T1Burn` | p2 | 20–60 °C | 40 | boiler counts as burning above T1 |
+| `p3T3Offer` | p3 | 40–85 °C | 60 | offer heat at T3 |
+| `p3OfferWin` | p3 | 1–60 min | 10 | offer window |
+| `p3OfferWait` | p3 | 0–480 min | 60 | wait between offers (0 = none) |
+| `afEnable` | flags | Bool, HA switch | on | anti-freeze enable |
+| `afInterval` | p3 | 5–240 min | 30 | P3 idle interval before an anti-freeze run |
+| `afDuration` | p3 | 10–600 s | 60 | anti-freeze run time |
+| `accVolume` | accumulator | 100–2000 L | 500 | accumulator volume |
+| `accTBase` | accumulator | 10–60 °C | 30 | energy base temperature |
+
+The existing `homeNoNeed` ("Home: no need", group `flags`, HA switch) is the P3 flag.
+
+### Home Assistant entities
+
+These come on top of the common entities (sensors, relays, settings, switches):
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `energy` | sensor, kWh, `energy_storage` / `measurement` | unavailable when n/a or not ready |
+| `energy_estimated` | binary sensor, diagnostic | ON when estimated; unavailable when n/a |
+| `p3_mode` | sensor | `normal` / `off` / `offer` |
+| `anti_freeze_run` | binary sensor, `running` | ON during an anti-freeze run |
+| `alarm_overheat` | binary sensor, `heat` | bit 0 |
+| `alarm_t1_failsafe`, `alarm_t1t2_failsafe`, `alarm_t2_failsafe`, `alarm_t3_failsafe` | binary sensor, `problem` | bits 1–4 |
+| `alarm_t1_fault` … `alarm_t6_fault` | binary sensor, `problem`, diagnostic | bits 8–13 |
+
+The status entities are unavailable until the controller has started (`bindBoilerRoomHaStatus` in
+`setup()` and the first `ctl.tick()`).
+
+### OLED pages and `/api/state` "ctl"
+
+- **Pages**, in rotation before Network/Sensors/Alarms:
+  - **Boiler**: T1, T2, then `P1`/`P2` `ON|OFF <reason>`. ON/OFF is the actual relay, and `!` marks
+    a safety (lock-bypass) request.
+  - **Accu**: T3, T4, T5 and `E x.x kWh`, `E ~x.x kWh est` or `E n/a`.
+  - **Supply**: T6, P3, `Mode NORMAL|OFF|OFFER [<m>m]`, `AF RUN` / `AF in <m>m` / `AF off`, and
+    `No-need set|clear|ign` (`ign` = saved but ignored while MQTT is down).
+- The Alarms page uses the labels above (bits 0–13).
+- `/api/state` carries a `"ctl"` member, added through `WebServices::setStateExtension()`.
+  home-heating never sets it. The member is `{"ok":false}` until the controller is ready:
+
+```json
+"ctl":{"ok":true,
+ "pumps":[{"n":"P1","on":true,"sf":false,"r":"charge","as":false}, … P2, P3],
+ "p3":{"mode":"off","af":false,"dump":false,"noOffer":false,"saved":true,"flag":true,"link":true,
+       "winS":0,"waitS":1234,"afInS":900,"idleS":300},
+ "energy":{"q":"est","kwh":18.6},
+ "oh":false,"t6":true}
+```
+
+In each `pumps[]` entry:
+- `on`/`sf`/`r` are the controller's request (`sf` = safety slot);
+- `as` means anti-seize is running;
+- the actual relay state stays in the base `relays[]`.
+
+`t6` is true only while T6 is Ok; stage 09 uses it.
+
+### Boiler-room controller checks (hardware only, NOT TESTED)
+
+None of these has been run on a real board yet.
+
+- [ ] **Boot.** At power-on, all relays stay OFF (`RelayBoot` first), then the controller takes over.
+      P3 starts NORMAL (MQTT not up yet) once its relay lock allows.
+- [ ] **Fresh install.** After a factory reset, T1..T6 are unassigned. P1 is forced ON (T1 failed),
+      P2 is forced ON (T1 + T2 failed), and alarms 1, 2, 4 and 8–13 are shown
+      (P3 stays NORMAL because T3 failed).
+- [ ] **T1 fail-safe.** Unplug the T1 probe. Within about 6 s, P1 switches ON with a `!` on the
+      Boiler page, even inside a relay lock. The alarms "Sensor T1 missing" and "T1 fail: P1
+      forced" appear. Plug it back in: the controller returns to the normal rule.
+- [ ] **Overheat.** Heat T1 above `ohOn` (or lower `ohOn` temporarily). P1 and P3 both run on the
+      safety slot (`overheat`, `dump`) and "Boiler overheat" is raised. A set "Home: no need" flag
+      stays set. Below `ohClear`, the alarm clears and P3 goes back to OFF.
+- [ ] **T2-only fault.** With T1 working, unplug the T2 probe. "T2 fail: P2 burn gate" is raised
+      and P2 follows the burn gate (`burn_gate`: ON while T1 > `p2T1Burn`, OFF below it minus the
+      hysteresis) on the control slot, so the relay lock is still respected (no `!`).
+- [ ] **T3-only fault.** Unplug the T3 probe. "T3 fail: no offer" is raised, P1 runs by T1 only
+      (`charge_t1`), P3 stays NORMAL and never enters OFFER, and the energy shows `~` (estimated).
+      Overheat protection still works on T1.
+- [ ] **OTA during a forced state.** Start an OTA update while P1 is forced (overheat, or T1
+      unplugged). During the update all relays stay OFF (the OTA inhibit beats the safety slot).
+      After the update, or after its rollback, the forced state resumes on its own (P1 ON with `!`).
+- [ ] **No-need flag via HA.** Turn on the "Home: no need" switch in HA: P3 goes OFF. When T3 reaches
+      `p3T3Offer`, the controller enters OFFER, P3 runs, and the switch turns itself **off** in HA.
+      Turn it on again from HA (or by the automation): at the end of the window P3 goes OFF and the
+      `p3OfferWait` wait starts.
+- [ ] **MQTT loss.** Stop the broker with the flag set: P3 returns to NORMAL within a tick, and the
+      Supply page shows `No-need ign`.
+- [ ] **Anti-freeze.** With P3 OFF and `afInterval` set low (e.g. 5 min), P3 runs for `afDuration`
+      seconds. `anti_freeze_run` turns ON in HA, and an `AntiFreezeRun` event appears in the log.
+- [ ] **Pages and alarm texts.** The Boiler, Accu and Supply pages rotate before Network and
+      Sensors. Values update live and no row is clipped. Every raised alarm shows its label on the
+      Alarms page.
+- [ ] **Energy.** With T3–T5 assigned, `energy` in HA matches the Accu page. Unplug T4: the value
+      shows `~` and `energy_estimated` turns ON.
+- [ ] **Watchdog.** Let the controller run for several hours with pages rotating and HA connected.
+      There are no watchdog resets, and the `debug` loop timing stays well under 100 ms.
 
 ## Prerequisites
 

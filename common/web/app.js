@@ -391,7 +391,7 @@ var App = (function () {
         var s = sensors[b - 24];
         return t('status.sensor_missing', { name: s && s.name ? s.name : String(b - 24 + 1) });
       }
-      return t('status.alarm_bit', { n: b });
+      return tOr('alarm.' + b, t('status.alarm_bit', { n: b }));
     });
   }
 
@@ -811,7 +811,7 @@ var App = (function () {
 
   function logRow(e) {
     var time = e.rt && e.lt ? e.lt : t('log.after_boot', fmtUptime(e.ts));
-    var ev = e.key ? tOr('ev.' + e.key, t('ev.other', { type: e.type })) : t('ev.other', { type: e.type });
+    var ev = e.key ? tOr('ev.' + e.key, t('ev.other', { type: e.type })) : tOr('ev.t' + e.type, t('ev.other', { type: e.type }));
     var val = (e.val !== undefined ? String(e.val) : '') + (e.aux ? ' / ' + e.aux : '');
     return el('tr', null, [
       el('td', { text: time }), el('td', { text: ev }), el('td', { text: e.src === undefined ? '' : String(e.src) }),

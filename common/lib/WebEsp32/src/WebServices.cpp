@@ -119,7 +119,7 @@ bool WebServices::publish(SharedJsonBuffer& buf, size_t len, const char* name, b
 }
 
 void WebServices::rebuildSnapshots() {
-    WebJsonContext c{_schema.controllerType, &_hwCfg, &WebServices::formatLocal, this, nullptr, nullptr};
+    WebJsonContext c{_schema.controllerType, &_hwCfg, &WebServices::formatLocal, this, _stateExt, _stateExtCtx};
     // Each builder gets its own document's cap, so a result always fits it.
     publish(_stateJson, buildStateJson(_state, c, g_scratch, WEB_STATE_CAP), "state", _stateFailed);
     publish(_sensorsJson, buildSensorsJson(_state, _hwCfg, g_scratch, WEB_SENSORS_CAP), "sensors", _sensorsFailed);
@@ -209,4 +209,9 @@ void WebServices::tick() {
 
 void WebServices::fastTick() {
     _captive.process();
+}
+
+void WebServices::setStateExtension(StateJsonExtension fn, void* ctx) {
+    _stateExt = fn;
+    _stateExtCtx = fn != nullptr ? ctx : nullptr;
 }
