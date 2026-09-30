@@ -1,0 +1,41 @@
+# Paste into a dashboard: Edit dashboard -> + Add card -> Manual (YAML).
+type: custom:heater-system-card
+title: Heating system          # set to "" to hide the title
+text_scale: 1.2                # label size, 0.6 - 1.6 (default 1)
+temp_scale: 1.3                # temperature size (default = text_scale)
+
+# Optional: override only the entity IDs that differ in your Home Assistant.
+# The defaults below are what HA creates from the controllers' MQTT discovery.
+# entities:
+#   t1: sensor.boiler_room_t1_temperature        # boiler flow
+#   t2: sensor.boiler_room_t2_temperature        # boiler return
+#   t3: sensor.boiler_room_t3_temperature        # accumulator top
+#   t4: sensor.boiler_room_t4_temperature        # accumulator middle
+#   t5: sensor.boiler_room_t5_temperature        # accumulator bottom
+#   t6: sensor.boiler_room_t6_temperature        # supply to home
+#   p1: binary_sensor.boiler_room_p1
+#   p2: binary_sensor.boiler_room_p2
+#   p3: binary_sensor.boiler_room_p3
+#   p3_mode: sensor.boiler_room_p3_mode
+#   energy: sensor.boiler_room_stored_energy
+#   h1: sensor.home_heating_h1_temperature        # radiator return
+#   h2: sensor.home_heating_h2_temperature        # radiator supply after P4
+#   h3: sensor.home_heating_h3_temperature        # hot supply in
+#   h4: sensor.home_heating_h4_temperature        # DHW tank
+#   p4: binary_sensor.home_heating_p4
+#   k2: sensor.home_heating_k2_mode               # tank / bypass
+#   k2_relay: binary_sensor.home_heating_k2       # fallback, ON = bypass
+#   k1_position: sensor.home_heating_k1_position
+#   k1_mode: sensor.home_heating_k1_mode
+#   k1_power: binary_sensor.home_heating_k1_power
+#   k1_direction: binary_sensor.home_heating_k1_direction
+#   h2_set: number.home_heating_radiator_supply_setpoint_h2
+#   no_need: binary_sensor.home_heating_no_need
+
+# Optional: replace the list of alarm/warning binary sensors shown in the
+# footer when ON (default: overheat, fail-safe alarms and B1/B3/B6/H1 warnings).
+# alarms:
+#   - binary_sensor.boiler_room_alarm_overheat
+#   - binary_sensor.home_heating_alarm_h3_fail_safe
+
+# show_missing: false   # hide the "entities not found" hint

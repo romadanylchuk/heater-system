@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<!-- Offline preview of heater-system-card with fake data. Open in a browser;
+     no Home Assistant needed. Buttons switch between example situations. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>heater-system-card preview</title>
+<style>
+  body { font-family: sans-serif; background: #f0f0f0; margin: 16px; }
+  body.dark { background: #111; color: #eee;
+    --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1;
+    --secondary-text-color: #9b9b9b; --secondary-background-color: #2a2a2a; --divider-color: #444; }
+  heater-system-card { max-width: 1000px; background: var(--card-background-color, #fff);
+    border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+  .bar { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  button { padding: 6px 12px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button data-s="winter">Winter: heating + P3</button>
+  <button data-s="dhw">Summer: DHW charging</button>
+  <button data-s="burn">Boiler burning, P1 + P2</button>
+  <button data-s="fault">Sensor fault + alarm</button>
+  <button id="dark">Toggle dark</button>
+</div>
+<heater-system-card id="card"></heater-system-card>
+<script src="heater-system-card.js"></script>
+<script>
+const base = {
+  "sensor.boiler_room_t1_temperature": "78.4", "sensor.boiler_room_t2_temperature": "61.2",
+  "sensor.boiler_room_t3_temperature": "74.0", "sensor.boiler_room_t4_temperature": "58.5",
+  "sensor.boiler_room_t5_temperature": "36.1", "sensor.boiler_room_t6_temperature": "72.3",
+  "binary_sensor.boiler_room_p1": "off", "binary_sensor.boiler_room_p2": "off",
+  "binary_sensor.boiler_room_p3": "on", "sensor.boiler_room_p3_mode": "normal",
+  "sensor.boiler_room_stored_energy": "14.2",
+  "sensor.home_heating_h1_temperature": "34.8", "sensor.home_heating_h2_temperature": "44.9",
+  "sensor.home_heating_h3_temperature": "70.6", "sensor.home_heating_h4_temperature": "52.0",
+  "binary_sensor.home_heating_p4": "on", "sensor.home_heating_k2_mode": "bypass",
+  "binary_sensor.home_heating_k2": "on", "sensor.home_heating_k1_position": "38",
+  "sensor.home_heating_k1_mode": "normal", "binary_sensor.home_heating_k1_power": "off",
+  "binary_sensor.home_heating_k1_direction": "off",
+  "number.home_heating_radiator_supply_setpoint_h2": "45.0",
+  "binary_sensor.home_heating_no_need": "off",
+  "binary_sensor.boiler_room_alarm_overheat": "off",
+};
+const scenarios = {
+  winter: {},
+  dhw: { "binary_sensor.home_heating_p4": "off", "sensor.home_heating_k2_mode": "tank",
+         "binary_sensor.home_heating_k2": "off", "sensor.home_heating_k1_mode": "closed",
+         "sensor.home_heating_k1_position": "0", "sensor.home_heating_h2_temperature": "27.0",
+         "sensor.home_heating_h1_temperature": "25.3", "sensor.home_heating_h4_temperature": "41.5" },
+  burn: { "binary_sensor.boiler_room_p1": "on", "binary_sensor.boiler_room_p2": "on",
+          "sensor.boiler_room_t1_temperature": "86.0", "binary_sensor.home_heating_k1_power": "on",
+          "binary_sensor.home_heating_k1_direction": "on" },
+  fault: { "sensor.home_heating_h3_temperature": "unavailable",
+           "sensor.boiler_room_t4_temperature": "unknown",
+           "binary_sensor.home_heating_alarm_h3_fail_safe": "on",
+           "binary_sensor.boiler_room_alarm_overheat": "on",
+           "sensor.home_heating_k1_position": "30", "sensor.home_heating_k1_mode": "failpos_fb" },
+};
+const names = { "binary_sensor.home_heating_alarm_h3_fail_safe": "Home heating Alarm H3 fail-safe",
+                "binary_sensor.boiler_room_alarm_overheat": "Boiler room Alarm overheat" };
+const card = document.getElementById("card");
+const q0 = new URLSearchParams(location.search);
+card.setConfig({ type: "custom:heater-system-card",
+  text_scale: q0.get("scale") || 1, temp_scale: q0.get("tscale") || q0.get("scale") || 1 });
+function show(name) {
+  const all = { ...base, ...scenarios[name] };
+  const states = {};
+  for (const [id, state] of Object.entries(all)) {
+    states[id] = { entity_id: id, state, attributes: { friendly_name: names[id] || id } };
+  }
+  card.hass = { states };
+}
+document.querySelectorAll("button[data-s]").forEach((b) => b.onclick = () => show(b.dataset.s));
+document.getElementById("dark").onclick = () => document.body.classList.toggle("dark");
+card.addEventListener("hass-more-info", (e) => console.log("more-info", e.detail.entityId));
+const q = new URLSearchParams(location.search);
+if (q.get("dark")) document.body.classList.add("dark");
+show(q.get("s") || "winter");
+</script>
+</body>
+</html>
