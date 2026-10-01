@@ -408,7 +408,7 @@ static NoNeedInputs allGood() {
     in.anyPending = false;
     in.h3FailedHeating = false;
     in.k2BypassRequested = true;
-    in.k2RelayActual = true;
+    in.k2BypassActual = true;
     in.k2ExerciseRunning = false;
     in.p4Requested = false;
     in.p4RelayActual = false;
@@ -432,7 +432,7 @@ static void test_no_need_single_blockers() {
     in.k2BypassRequested = false;
     TEST_ASSERT_FALSE(computeNoNeed(in));
     in = allGood();
-    in.k2RelayActual = false;              // actual TANK
+    in.k2BypassActual = false;              // actual TANK
     TEST_ASSERT_FALSE(computeNoNeed(in));
     in = allGood();
     in.p4Requested = true;
@@ -448,12 +448,12 @@ static void test_no_need_single_blockers() {
 static void test_no_need_a2_actual_and_requested() {
     // K2 requested bypass, actual still TANK (relay lock) -> false.
     NoNeedInputs in = allGood();
-    in.k2RelayActual = false;
+    in.k2BypassActual = false;
     TEST_ASSERT_FALSE(computeNoNeed(in));
     // K2 requested TANK while actual still bypass -> false immediately.
     in = allGood();
     in.k2BypassRequested = false;
-    in.k2RelayActual = true;
+    in.k2BypassActual = true;
     TEST_ASSERT_FALSE(computeNoNeed(in));
     // P4 requested ON while actual still OFF (lock) -> false immediately.
     in = allGood();
@@ -466,7 +466,7 @@ static void test_no_need_exercise_transparency() {
     // K2 exercise running: actual TANK, request bypass -> true.
     NoNeedInputs in = allGood();
     in.k2ExerciseRunning = true;
-    in.k2RelayActual = false;
+    in.k2BypassActual = false;
     TEST_ASSERT_TRUE(computeNoNeed(in));
     in.k2BypassRequested = false;          // the request still decides
     TEST_ASSERT_FALSE(computeNoNeed(in));
@@ -480,7 +480,7 @@ static void test_no_need_exercise_transparency() {
     // Both exercising at once.
     in = allGood();
     in.k2ExerciseRunning = true;
-    in.k2RelayActual = false;
+    in.k2BypassActual = false;
     in.p4ExerciseRunning = true;
     in.p4RelayActual = true;
     TEST_ASSERT_TRUE(computeNoNeed(in));

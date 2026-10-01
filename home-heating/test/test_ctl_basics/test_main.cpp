@@ -128,6 +128,15 @@ static void test_fail_mode_keys() {
     TEST_ASSERT_EQUAL_STRING("none", failModeKey(static_cast<FailMode>(200)));
 }
 
+// K2 valve is normally-open to BYPASS: relay energised = TANK, de-energised = BYPASS.
+static void test_k2_relay_polarity() {
+    TEST_ASSERT_TRUE(HH_K2_RELAY_ON_IS_TANK);
+    TEST_ASSERT_TRUE(hhK2RelayForBypass(false));    // TANK   -> relay ON
+    TEST_ASSERT_FALSE(hhK2RelayForBypass(true));    // BYPASS -> relay OFF
+    TEST_ASSERT_TRUE(hhK2BypassFromRelay(false));   // relay OFF (boot/OTA) -> BYPASS
+    TEST_ASSERT_FALSE(hhK2BypassFromRelay(true));
+}
+
 static void test_index_constants() {
     TEST_ASSERT_EQUAL_UINT8(4, HH_SENSOR_COUNT);
     TEST_ASSERT_EQUAL_UINT8(3, HH_SENSOR_H4);
@@ -268,5 +277,6 @@ int main() {
     RUN_TEST(test_guard_raises_max_pulse);
     RUN_TEST(test_guard_leaves_valid_settings_unchanged);
     RUN_TEST(test_k1_stroke_lengths);
+    RUN_TEST(test_k2_relay_polarity);
     return UNITY_END();
 }

@@ -585,11 +585,12 @@ static void test_page_heating_fault_temps_and_fail_row() {
 static void test_page_dhw_tank_bypass_and_no_need() {
     CommonState s = sampleState();
     HomeHeatingStatus st = sampleStatus();
+    s.relays.on[HH_RELAY_K2] = true;   // energised = TANK (actual relay, HH_K2_RELAY_ON_IS_TANK)
     renderDhwPage(s, g_frame, &st);
     const char* tank[] = {"H3 70.1", "H4 50.0", "K2 TANK charging", "No need: no"};
     expectFrame(g_frame, "DHW", tank, 4);
 
-    s.relays.on[HH_RELAY_K2] = true;   // energised = bypass (actual relay)
+    s.relays.on[HH_RELAY_K2] = false;  // de-energised = BYPASS (actual relay)
     setSensor(s, HH_SENSOR_H4, SensorState::Fault, 0.0f);
     st.k2Bypass = true;
     st.k2Reason = K2Reason::H4Full;

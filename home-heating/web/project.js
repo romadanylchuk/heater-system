@@ -80,7 +80,8 @@
   function dhwView(ctl, state) {
     var k2 = ctl.k2 || {};
     var relay = (state.relays || [])[RELAY_K2];
-    var byp = !!(relay && relay.on);   // energised = bypass
+    // K2 relay energised = TANK (normally-open-to-bypass valve, HH_K2_RELAY_ON_IS_TANK)
+    var byp = relay ? !relay.on : !!k2.byp;
     return tempLine(state, 'H3', 2) + tempLine(state, 'H4', 3) +
       '<p><b>K2</b> ' + UI.modeBadge(t(byp ? 'hh.bypass' : 'hh.tank'), byp ? 'off' : 'heat') +
       ' <span class="muted">' + esc(t('hh.k2.' + k2.r)) + '</span>' + chips(relay, k2.as) + '</p>' +

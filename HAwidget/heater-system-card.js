@@ -15,7 +15,7 @@
  *     t1: sensor.boiler_room_t1_temperature
  */
 
-const HSC_VERSION = "1.1.0";
+const HSC_VERSION = "1.2.0";
 
 // Default entity IDs: what HA creates from the firmware's MQTT discovery
 // (device "Boiler room" / "Home heating" + entity name).
@@ -39,7 +39,7 @@ const HSC_DEFAULTS = {
   h4: "sensor.home_heating_h4_temperature",  // DHW tank
   p4: "binary_sensor.home_heating_p4",
   k2: "sensor.home_heating_k2_mode",         // "tank" / "bypass"
-  k2_relay: "binary_sensor.home_heating_k2", // fallback: ON = bypass
+  k2_relay: "binary_sensor.home_heating_k2", // fallback: ON = tank (valve normally-open to bypass)
   k1_position: "sensor.home_heating_k1_position",
   k1_mode: "sensor.home_heating_k1_mode",
   k1_power: "binary_sensor.home_heating_k1_power",
@@ -387,11 +387,11 @@ class HeaterSystemCard extends HTMLElement {
       }
     }
 
-    // K2 diverter: mode sensor first, relay as fallback (relay ON = bypass)
+    // K2 diverter: mode sensor first, relay as fallback (relay ON = tank)
     let k2 = this._txt("k2");
     if (k2 !== "tank" && k2 !== "bypass") {
       const r = this._on("k2_relay");
-      k2 = r === null ? null : (r ? "bypass" : "tank");
+      k2 = r === null ? null : (r ? "tank" : "bypass");
     }
     s.k2 = k2;
     this._q("#k2-leg-tank").classList.toggle("sel", k2 === "tank");

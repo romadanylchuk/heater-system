@@ -12,6 +12,14 @@ constexpr uint8_t HH_SENSOR_H1 = 0, HH_SENSOR_H2 = 1, HH_SENSOR_H3 = 2, HH_SENSO
 constexpr uint8_t HH_RELAY_K2 = 0, HH_RELAY_K1_POWER = 1, HH_RELAY_K1_DIR = 2, HH_RELAY_P4 = 3;
 constexpr uint8_t HH_AS_P4 = 0, HH_AS_K2 = 1, HH_AS_K1 = 2;
 
+// K2 relay polarity. The installed diverter is normally-open to BYPASS: with no
+// power it rests on BYPASS, and the R1 NO contact powers it to TANK. So relay
+// energised = TANK, de-energised = BYPASS (also the boot / OTA / not-ready state).
+// Everything that maps K2 <-> relay goes through these two helpers.
+constexpr bool HH_K2_RELAY_ON_IS_TANK = true;
+constexpr bool hhK2RelayForBypass(bool bypass) { return HH_K2_RELAY_ON_IS_TANK ? !bypass : bypass; }
+constexpr bool hhK2BypassFromRelay(bool relayOn) { return HH_K2_RELAY_ON_IS_TANK ? !relayOn : relayOn; }
+
 // Failed = Fault | Unassigned (an unassigned sensor is not working), Pending =
 // Unknown (boot / reassignment, before the debounce settles: wait, not a fault).
 enum class SensorHealth : uint8_t { Ok, Failed, Pending };

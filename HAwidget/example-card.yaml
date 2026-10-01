@@ -24,7 +24,7 @@ temp_scale: 1.3                # temperature size (default = text_scale)
 #   h4: sensor.home_heating_h4_temperature        # DHW tank
 #   p4: binary_sensor.home_heating_p4
 #   k2: sensor.home_heating_k2_mode               # tank / bypass
-#   k2_relay: binary_sensor.home_heating_k2       # fallback, ON = bypass
+#   k2_relay: binary_sensor.home_heating_k2       # fallback, ON = tank
 #   k1_position: sensor.home_heating_k1_position
 #   k1_mode: sensor.home_heating_k1_mode
 #   k1_power: binary_sensor.home_heating_k1_power

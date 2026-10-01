@@ -234,7 +234,7 @@ Heating priority over DHW is **hydraulic** — no firmware logic.
 | H2 | DS18B20 | Mixed supply after P4 (controlled value) |
 | H3 | DS18B20 | Hot supply from boiler room (K1 port 3) |
 | H4 | DS18B20 | DHW tank |
-| R1 | Relay | K2 diverter. De-energized: 1-2 → **tank**. Energized: 1-3 → **bypass**. |
+| R1 | Relay | K2 diverter, normally-open to **bypass**. De-energized → **bypass**. Energized (NO contact) → **tank**. (Changed 2026-10-01 to match the installed valve.) |
 | R2 | Relay | K1 motor power |
 | R3 | Relay | K1 direction: NO → OPEN, NC → CLOSE (de-energized = CLOSE). This wiring makes OPEN and CLOSE at the same time physically impossible. Direction is changed only while R2 is OFF, with a short pause. |
 | R4 | Relay | P4 home pump |

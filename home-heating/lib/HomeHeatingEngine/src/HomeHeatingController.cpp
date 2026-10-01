@@ -57,7 +57,7 @@ HomeHeatingOutputs HomeHeatingController::update(
                     h3 == SensorHealth::Pending || h4 == SensorHealth::Pending;
     ni.h3FailedHeating = g.heatingEnabled && h3 == SensorHealth::Failed;
     ni.k2BypassRequested = k2.bypass;
-    ni.k2RelayActual = in.k2RelayActual;
+    ni.k2BypassActual = in.k2BypassActual;
     ni.k2ExerciseRunning = in.k2ExerciseRunning;
     ni.p4Requested = p4.on;
     ni.p4RelayActual = in.p4RelayActual;

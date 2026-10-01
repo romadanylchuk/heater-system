@@ -130,7 +130,7 @@ void renderDhwPage(const CommonState& s, DisplayFrame& f, void* ctx) {
     f.addBody(0, row);
     tempRow(s, HH_SENSOR_H4, "H4", row, sizeof(row));
     f.addBody(1, row);
-    snprintf(row, sizeof(row), "K2 %s %s", relayOn(s, HH_RELAY_K2) ? "BYP" : "TANK", k2ReasonShort(st->k2Reason));
+    snprintf(row, sizeof(row), "K2 %s %s", hhK2BypassFromRelay(relayOn(s, HH_RELAY_K2)) ? "BYP" : "TANK", k2ReasonShort(st->k2Reason));
     f.addBody(2, row);
     snprintf(row, sizeof(row), "No need: %s", st->noNeed ? "yes" : "no");
     f.addBody(3, row);

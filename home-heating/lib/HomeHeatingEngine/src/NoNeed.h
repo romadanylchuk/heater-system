@@ -7,7 +7,7 @@
 struct NoNeedInputs {
     bool anyPending;              // any of H1..H4 Pending (A4)
     bool h3FailedHeating;         // heatingEnabled && H3 Failed (D14)
-    bool k2BypassRequested, k2RelayActual, k2ExerciseRunning;
+    bool k2BypassRequested, k2BypassActual, k2ExerciseRunning;  // actual = valve physically in BYPASS
     bool p4Requested, p4RelayActual, p4ExerciseRunning;
     bool p4OffDelayElapsed;
 };

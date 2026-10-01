@@ -243,7 +243,7 @@ void test_no_need_with_heating_off_after_relays_match() {
     HomeHeatingInputs in = baseInputs();
     in.sensor[HH_SENSOR_H3] = ok(50.0f);   // < H3min 65 -> bypass H3Low
     in.sensor[HH_SENSOR_H4] = ok(40.0f);
-    in.k2RelayActual = false;               // lock still holds TANK
+    in.k2BypassActual = false;               // lock still holds TANK
     in.p4RelayActual = false;
     HomeHeatingOutputs o = ctl.update(in, g, 0);
     TEST_ASSERT_TRUE(o.k2.bypass);
@@ -251,7 +251,7 @@ void test_no_need_with_heating_off_after_relays_match() {
     TEST_ASSERT_FALSE(o.p4.on);
     TEST_ASSERT_TRUE(o.p4.offDelayElapsed);
     TEST_ASSERT_FALSE(o.noNeed);
-    in.k2RelayActual = true;
+    in.k2BypassActual = true;
     o = ctl.update(in, g, 1000);
     TEST_ASSERT_TRUE(o.noNeed);
     in.p4RelayActual = true;                // P4 physically still ON -> not yet
@@ -266,7 +266,7 @@ void test_no_need_off_while_h3_failed_heating() {
     HomeHeatingInputs in = baseInputs();
     in.sensor[HH_SENSOR_H1] = fault(false);
     in.sensor[HH_SENSOR_H3] = fault(false);   // Multi, H3 Failed -> P4 OFF, K2 bypass H3Fault
-    in.k2RelayActual = true;
+    in.k2BypassActual = true;
     const HomeHeatingOutputs o = ctl.update(in, g, 400000);
     TEST_ASSERT_FALSE(o.p4.on);
     TEST_ASSERT_TRUE(o.k2.bypass);

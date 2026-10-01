@@ -205,7 +205,7 @@ static void test_hot_h3_p4_waits_for_boot_lock() {
     TEST_ASSERT_TRUE(f.relays.lockDelayed(HH_RELAY_P4));
     f.runTo(61000);
     TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_P4));
-    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));   // TANK (charging)
+    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));    // energised = TANK (charging), after the boot lock
     TEST_ASSERT_FALSE(f.safetySeen);
 }
 
@@ -220,44 +220,47 @@ static void test_h3_fault_forced_p4_still_waits_for_lock() {
     TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_P4));
     f.runTo(61000);
     TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_P4));
-    // H3 fault -> K2 BYPASS (D13), through the control slot; the boot lock applies too.
+    // H3 fault -> K2 BYPASS (D13), through the control slot: de-energised, as at boot.
     TEST_ASSERT_TRUE(f.status.k2Bypass);
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
+    TEST_ASSERT_FALSE(f.relays.requested(HH_RELAY_K2));
+    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
     TEST_ASSERT_FALSE(f.safetySeen);
 }
 
 static void test_k2_flip_back_within_lock_is_delayed() {
     Fixture f;
     f.start();
-    f.runTo(70000);
-    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
-    f.setOk(HH_SENSOR_H4, 71.0f);   // tank full -> BYPASS; boot lock long expired -> immediate
-    f.runTo(71000);
+    // TANK = energised: K2 switches ON when the boot lock ends (~61 s), which starts
+    // a new 60 s lock; wait it out first.
+    f.runTo(130000);
+    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
+    f.setOk(HH_SENSOR_H4, 71.0f);   // tank full -> BYPASS; last switch > 60 s ago -> immediate
+    f.runTo(131000);
     TEST_ASSERT_TRUE(f.status.k2Bypass);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(K2Reason::H4Full), static_cast<int>(f.status.k2Reason));
-    f.runTo(71100);
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
+    f.runTo(131100);
+    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));   // BYPASS = de-energised
     f.setOk(HH_SENSOR_H4, 50.0f);   // back to TANK within 60 s of the last switch
-    f.runTo(80000);
+    f.runTo(140000);
     TEST_ASSERT_FALSE(f.status.k2Bypass);
-    TEST_ASSERT_FALSE(f.relays.requested(HH_RELAY_K2));
-    f.runTo(131000);
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
-    TEST_ASSERT_TRUE(f.relays.lockDelayed(HH_RELAY_K2));
-    f.runTo(132000);
+    TEST_ASSERT_TRUE(f.relays.requested(HH_RELAY_K2));
+    f.runTo(191000);
     TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
+    TEST_ASSERT_TRUE(f.relays.lockDelayed(HH_RELAY_K2));
+    f.runTo(192000);
+    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
     TEST_ASSERT_FALSE(f.safetySeen);
 }
 
 static void test_h4_fault_k2_bypass_via_control_slot() {
     Fixture f;
     f.start();
-    f.runTo(70000);
+    f.runTo(130000);   // past the lock started by the boot-time TANK switch-on (~61 s)
     f.setSensor(HH_SENSOR_H4, SensorState::Fault);
-    f.runTo(71100);
+    f.runTo(131100);
     TEST_ASSERT_TRUE(f.status.k2Bypass);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(K2Reason::H4Fault), static_cast<int>(f.status.k2Reason));
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
+    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));   // BYPASS = de-energised
     TEST_ASSERT_FALSE(f.relays.safetyActive(HH_RELAY_K2));
     TEST_ASSERT_FALSE(f.safetySeen);
 }
@@ -377,21 +380,21 @@ static void test_no_need_end_to_end_with_exercise_transparency() {
     f.start();
     TEST_ASSERT_FALSE(f.status.p4On);
     TEST_ASSERT_TRUE(f.status.k2Bypass);
+    // BYPASS is the de-energised state, so the valve is already physically in
+    // BYPASS at boot: no wait for the boot lock.
     f.runTo(59000);
+    TEST_ASSERT_FALSE(f.relays.requested(HH_RELAY_K2));
     TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
-    TEST_ASSERT_FALSE(f.status.noNeed);   // requested, but the relay is not energised yet
-    f.runTo(61000);
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
     TEST_ASSERT_TRUE(f.status.noNeed);
     TEST_ASSERT_EQUAL_UINT32(1, f.countEvents(HH_EVENT_NO_NEED, HH_EVENT_SOURCE_NO_NEED_BASE + 1));
 
-    // K2 anti-seize exercise holds TANK: transparent while antiSeize reports it running.
+    // K2 anti-seize exercise holds TANK (energised): transparent while antiSeize reports it running.
     f.runTo(130000);
     f.state.antiSeize.count = 3;
     f.state.antiSeize.output[HH_AS_K2].running = true;
-    f.relays.setExercise(HH_RELAY_K2, false);
+    f.relays.setExercise(HH_RELAY_K2, true);
     f.runTo(131000);
-    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
+    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
     TEST_ASSERT_TRUE(f.status.noNeed);
     // Same relay state without the running flag: no-need drops (actual TANK).
     f.state.antiSeize.output[HH_AS_K2].running = false;
@@ -399,7 +402,7 @@ static void test_no_need_end_to_end_with_exercise_transparency() {
     TEST_ASSERT_FALSE(f.status.noNeed);
     f.relays.setExercise(HH_RELAY_K2, std::nullopt);
     f.runTo(200000);
-    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));
+    TEST_ASSERT_FALSE(f.relays.actual(HH_RELAY_K2));
     TEST_ASSERT_TRUE(f.status.noNeed);
 
     // H3 rises -> P4 requested ON -> no-need false the same tick (before any relay moves).

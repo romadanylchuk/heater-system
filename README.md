@@ -917,7 +917,7 @@ None of these has been run on a real board yet.
 ## Home-heating controller (stage 08)
 
 The `home-heating` firmware runs the heating pump **P4**, the DHW diverter **K2** (R1 relay: de-energised =
-**TANK**, energised = **BYPASS**) and the radiator mixing valve **K1** (3-point motor valve, ~120 s full
+**BYPASS**, energised = **TANK** — the valve is normally-open to bypass, see `HH_K2_RELAY_ON_IS_TANK`) and the radiator mixing valve **K1** (3-point motor valve, ~120 s full
 travel, no position feedback). It also computes the **"no need"** signal that HA copies to the boiler room.
 The logic lives in the project-local library `home-heating/lib/HomeHeatingEngine`. Like stage 07, it is pure
 C++ with no `Arduino.h`, `Wire.h`, `millis()`, NVS or network calls. Time is injected as monotonic ms, and the
@@ -1005,12 +1005,12 @@ TANK (charging the DHW tank) only while all three hysteresis latches are true, o
 "No need" is ON only when **all** of these hold:
 - H1–H4 are all known (none pending);
 - not (heating enabled and H3 failed) — while H3 is faulted, no-need is never sent;
-- K2 requested BYPASS **and** the K2 relay is actually energised;
+- K2 requested BYPASS **and** the valve is actually in BYPASS (K2 relay de-energised);
 - P4 requested OFF **and** the P4 relay is actually OFF **and** the P4 off delay has elapsed.
 
 It turns ON only on actual + requested relays and turns OFF as soon as a request changes. During a P4/K2
 anti-seize exercise the request stands in for the relay, so a 30 s exercise does not flap the signal. During
-OTA all relays drop, so K2 reads TANK and no-need goes OFF (fail toward supplying, accepted).
+OTA all relays drop, so K2 physically rests on BYPASS; no-need still follows the controller's requests (P4 and K2).
 
 ### Sensor fail-safes (Failed vs Unknown)
 

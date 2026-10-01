@@ -313,7 +313,7 @@ void HomeHeatingRuntime::tick(uint64_t nowMs, const LocalTimeInfo& local) {
         _status.ready = false;
         _status.step.block = StepBlock::Unavailable;
         _relays.requestControl(HH_RELAY_P4, false, RelayReason::Control);
-        _relays.requestControl(HH_RELAY_K2, false, RelayReason::Control);
+        _relays.requestControl(HH_RELAY_K2, false, RelayReason::Control);   // de-energised = BYPASS
         _startPending = false;
         _cancelPending = false;
         publishWarnings(0);   // stage 09: no diagnostics while not ready (owned bits only)
@@ -338,7 +338,7 @@ void HomeHeatingRuntime::tick(uint64_t nowMs, const LocalTimeInfo& local) {
         }
     }
     in.p4RelayActual = _relays.actual(HH_RELAY_P4);
-    in.k2RelayActual = _relays.actual(HH_RELAY_K2);
+    in.k2BypassActual = hhK2BypassFromRelay(_relays.actual(HH_RELAY_K2));
     in.p4ExerciseRunning = HH_AS_P4 < _state.antiSeize.count && _state.antiSeize.output[HH_AS_P4].running;
     in.k2ExerciseRunning = HH_AS_K2 < _state.antiSeize.count && _state.antiSeize.output[HH_AS_K2].running;
     in.k1Busy = _k1.busy();
@@ -352,7 +352,7 @@ void HomeHeatingRuntime::tick(uint64_t nowMs, const LocalTimeInfo& local) {
 
     // 5. Control slot only, every tick (A5/D3): the lock applies to forced outputs too.
     _relays.requestControl(HH_RELAY_P4, out.p4.on, RelayReason::Control);
-    _relays.requestControl(HH_RELAY_K2, out.k2.bypass, RelayReason::Control);
+    _relays.requestControl(HH_RELAY_K2, hhK2RelayForBypass(out.k2.bypass), RelayReason::Control);
 
     // 6. K1 (the controller already withholds commands while inhibited / anti-seize owned).
     if (out.k1.cmd.issue) {
