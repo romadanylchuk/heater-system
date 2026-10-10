@@ -29,6 +29,7 @@ It is a single JavaScript file with no dependencies and nothing to build. HACS i
 | `example-card.yaml` | Card YAML to paste into a dashboard, with all options commented. |
 | `preview.html` | Offline preview with fake data. Open it in a browser to see the card without Home Assistant. |
 | `screenshot.png` | Screenshot used in this README. |
+| `no-need-automation.yaml` | Home Assistant automation that links the two controllers (see below). |
 
 ## Installation
 
@@ -149,6 +150,41 @@ entities:
 | `show_missing` | `true` | Show the "entities not found" hint. |
 | `text_scale` | `1` | Size of all labels, 0.6–1.6. |
 | `temp_scale` | `text_scale` | Size of the temperatures only, 0.6–1.6. |
+
+## "No need" automation (links the two controllers)
+
+The two controllers never talk to each other directly. Home Assistant has to copy the home-heating
+**"No need"** sensor to the boiler-room **"Home: no need"** switch. When the house needs nothing, P3
+stops, and the boiler room keeps the heat in the accumulator.
+
+**Install** (about a minute):
+
+1. **Settings → Automations & scenes → + Create automation → Create new automation.**
+2. **⋮** (top right) → **Edit in YAML**.
+3. Replace everything with the contents of **`no-need-automation.yaml`** (this folder) and click **Save**.
+
+**Check it:**
+
+- In **Settings → Automations**, "Heating: copy home no-need to boiler room" is enabled.
+- Compare the home-heating **No need** sensor with the boiler-room **Home: no need** switch. They should
+  match within a few seconds. The Status page of each controller and the dashboard card badge show the
+  same thing.
+- If an entity has a different ID in your Home Assistant, change it in **both** places in the
+  YAML: under `trigger:` and under `variables:`.
+
+**What it does:**
+
+- **Copies the home sensor's current state** to the boiler-room switch. It runs when either
+  entity changes, when Home Assistant starts, and every 5 minutes. It does not only react to changes.
+  This matters because the boiler room **clears the flag by itself** when it offers heat. If the house
+  still needs nothing, the automation sets the flag again.
+- **Fails toward supplying:** if the home sensor is `unavailable` or `unknown` (home controller or MQTT
+  offline), it turns the boiler-room switch **OFF**, so the boiler room keeps supplying heat.
+- **No needless writes:** it writes only when the switch differs from the wanted state, so the 5-minute
+  check sends no extra MQTT messages and causes no flash writes.
+
+The boiler room also ignores the flag on its own whenever its MQTT link is down. A lost link can never
+leave the house without heat.
 
 ## Updating the card
 

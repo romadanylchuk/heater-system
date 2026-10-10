@@ -1,0 +1,34 @@
+# Paste-ready Home Assistant automation: home-heating "No need" -> boiler-room "Home: no need".
+# Install: Settings -> Automations & scenes -> + Create automation -> Create new automation
+#          -> ⋮ (top right) -> Edit in YAML -> replace everything with this file -> Save.
+# Full explanation: docs/ha-home-no-need-automation.yaml and HAwidget/README.md.
+
+alias: "Heating: copy home no-need to boiler room"
+description: >-
+  Keeps the boiler-room "Home: no need" switch equal to the home-heating
+  "No need" sensor. Unavailable/unknown home sensor -> switch OFF.
+mode: queued
+max: 10
+trigger:
+  - platform: state
+    entity_id: binary_sensor.home_heating_no_need   # adjust (home sensor)
+  - platform: state
+    entity_id: switch.boiler_room_home_no_need      # adjust (boiler-room switch)
+    to: null   # any state change (incl. back from unavailable), no attribute-only changes
+  - platform: homeassistant
+    event: start
+  - platform: time_pattern
+    minutes: "/5"
+variables:
+  home_sensor: binary_sensor.home_heating_no_need   # adjust (home sensor)
+  boiler_switch: switch.boiler_room_home_no_need    # adjust (boiler-room switch)
+  desired: "{{ 'on' if is_state(home_sensor, 'on') else 'off' }}"
+condition:
+  - condition: template
+    value_template: "{{ states(boiler_switch) in ['on', 'off'] }}"
+  - condition: template
+    value_template: "{{ states(boiler_switch) != desired }}"
+action:
+  - service: "switch.turn_{{ desired }}"
+    target:
+      entity_id: "{{ boiler_switch }}"
