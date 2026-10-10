@@ -132,6 +132,105 @@ static void mqtt_test_failure_logged_once_per_wifi_session() {
     TEST_ASSERT_EQUAL_INT(1, static_cast<int>(events.countOf(EventType::MqttDisconnected)));
 }
 
+// EventSink that rejects every log until `acceptFrom` (models EventLog's
+// 60 s per-(type, source) window right after MqttDisconnected(0)).
+struct GatedEventSink : public EventSink {
+    RecordingEventSink accepted;
+    uint64_t now = 0;
+    uint64_t acceptFrom = 0;
+    int rejected = 0;
+    bool logEvent(uint16_t type, uint16_t source, float value, float aux, EventReason reason) override {
+        if (now < acceptFrom) {
+            ++rejected;
+            return false;
+        }
+        return accepted.logEvent(type, source, value, aux, reason);
+    }
+};
+
+static void mqtt_test_failure_log_retried_while_rate_limited() {
+    MqttEndpoint ep = mqttEp("broker.local");
+    MqttSession session;
+    GatedEventSink events;
+    events.acceptFrom = 60000;
+    session.begin(ep, 0);
+
+    const uint64_t attempts[] = {0, 5000, 15000, 35000, 75000, 135000};
+    for (uint64_t t : attempts) {
+        events.now = t;
+        session.tick(ep, true, false, t, events);
+    }
+    TEST_ASSERT_EQUAL_INT(3, events.rejected);  // attempts #1..#3 tried and were rate-limited
+    TEST_ASSERT_EQUAL_INT(1, static_cast<int>(events.accepted.countOf(EventType::MqttDisconnected)));
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, events.accepted.at(0).value);  // accepted at attempt #4, then never again
+}
+
+static void mqtt_test_stuck_attempt_aborted_after_timeout() {
+    MqttEndpoint ep = mqttEp("broker.local");
+    MqttSession session;
+    RecordingEventSink events;
+    session.begin(ep, 0);
+    session.tick(ep, true, true, 0, events);  // connected session
+    TEST_ASSERT_TRUE(session.connected());
+
+    // Link drops; attempt at once, then the transport hangs (never connected).
+    MqttSessionActions a = session.tick(ep, true, false, 1000, events);
+    TEST_ASSERT_TRUE(a.connect);
+    TEST_ASSERT_FALSE(a.abortAttempt);
+
+    // Backoff retries at +5 s and +15 s restart the attempt clock.
+    a = session.tick(ep, true, false, 6000, events);
+    TEST_ASSERT_TRUE(a.connect);
+    a = session.tick(ep, true, false, 16000, events);
+    TEST_ASSERT_TRUE(a.connect);
+
+    a = session.tick(ep, true, false, 16000 + MqttSession::ATTEMPT_TIMEOUT_MS - 1, events);
+    TEST_ASSERT_FALSE(a.abortAttempt);
+    a = session.tick(ep, true, false, 16000 + MqttSession::ATTEMPT_TIMEOUT_MS, events);
+    TEST_ASSERT_TRUE(a.abortAttempt);  // 15 s without a connection: tear it down
+    TEST_ASSERT_FALSE(a.connect);      // next attempt still follows the backoff (due at 36 s)
+    a = session.tick(ep, true, false, 33000, events);
+    TEST_ASSERT_FALSE(a.abortAttempt);  // once per connect action
+
+    a = session.tick(ep, true, false, 36000, events);
+    TEST_ASSERT_TRUE(a.connect);
+    TEST_ASSERT_FALSE(a.abortAttempt);
+    a = session.tick(ep, true, false, 36000 + MqttSession::ATTEMPT_TIMEOUT_MS, events);
+    TEST_ASSERT_TRUE(a.abortAttempt);  // keeps recovering on every later stuck attempt
+
+    a = session.tick(ep, true, true, 60000, events);
+    TEST_ASSERT_TRUE(a.sessionStarted);
+    a = session.tick(ep, true, true, 200000, events);
+    TEST_ASSERT_FALSE(a.abortAttempt);  // never while connected
+}
+
+static void mqtt_test_no_abort_without_wifi_or_attempt() {
+    MqttEndpoint ep = mqttEp("broker.local");
+    MqttSession session;
+    RecordingEventSink events;
+    session.begin(ep, 0);
+    for (uint64_t t = 0; t <= 120000; t += 1000) {
+        MqttSessionActions a = session.tick(ep, false, false, t, events);
+        TEST_ASSERT_FALSE(a.abortAttempt);
+    }
+}
+
+static void mqtt_test_endpoint_change_aborts_pending_attempt() {
+    MqttEndpoint ep1 = mqttEp("broker1.local");
+    MqttEndpoint ep2 = mqttEp("broker2.local");
+    MqttSession session;
+    RecordingEventSink events;
+    session.begin(ep1, 0);
+    MqttSessionActions a = session.tick(ep1, true, false, 0, events);
+    TEST_ASSERT_TRUE(a.connect);
+
+    a = session.tick(ep2, true, false, 1000, events);
+    TEST_ASSERT_TRUE(a.abortAttempt);
+    TEST_ASSERT_FALSE(a.disconnect);
+    TEST_ASSERT_TRUE(a.configure);
+    TEST_ASSERT_TRUE(a.connect);
+}
+
 static void mqtt_test_connected_logs_and_session_started() {
     MqttEndpoint ep = mqttEp("broker.local");
     MqttSession session;
@@ -374,6 +473,10 @@ inline void runMqttSuite() {
     RUN_TEST(mqtt_test_connect_only_when_wifi_up);
     RUN_TEST(mqtt_test_backoff_5_10_20_40_60_cap);
     RUN_TEST(mqtt_test_failure_logged_once_per_wifi_session);
+    RUN_TEST(mqtt_test_failure_log_retried_while_rate_limited);
+    RUN_TEST(mqtt_test_stuck_attempt_aborted_after_timeout);
+    RUN_TEST(mqtt_test_no_abort_without_wifi_or_attempt);
+    RUN_TEST(mqtt_test_endpoint_change_aborts_pending_attempt);
     RUN_TEST(mqtt_test_connected_logs_and_session_started);
     RUN_TEST(mqtt_test_wifi_drop_forces_disconnect_and_effective_false_same_tick);
     RUN_TEST(mqtt_test_endpoint_change_reconfigures);

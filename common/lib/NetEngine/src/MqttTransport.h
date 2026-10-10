@@ -17,6 +17,9 @@ public:
 
     virtual void connect() = 0;  // non-blocking
     virtual void disconnect(bool force) = 0;
+    // Tears down a connect attempt that has not reached the MQTT-connected
+    // state (TCP connecting/open, CONNACK pending). No-op when connected or idle.
+    virtual void abortConnect() = 0;
     virtual bool connected() const = 0;
 
     // false = not queued (e.g. the TCP send buffer lacks space); the caller

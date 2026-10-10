@@ -273,6 +273,30 @@ static void net_test_mqtt_session_publishes_discovery_then_availability_then_sta
     TEST_ASSERT_TRUE(f.state.network.mqttConnected);
 }
 
+static void net_test_stuck_mqtt_attempt_is_aborted_and_retried() {
+    NetFixture f;
+    f.setSsid("MyHomeNet", "pw");
+    f.setMqttHost("broker.local");
+    f.begin();
+    f.wifi.link = true;
+
+    // Broker never answers: the transport stays "not connected" forever.
+    for (uint64_t now = 0; now <= 120000; now += 1000) {
+        f.runtime.tick(now);
+    }
+    TEST_ASSERT_TRUE(f.mqtt.abortCount >= 1);
+    const int abortsAt120 = f.mqtt.abortCount;
+    const int connectsAt120 = f.mqtt.connectCount;
+
+    // Recovery keeps going: further aborts and fresh attempts follow.
+    for (uint64_t now = 121000; now <= 300000; now += 1000) {
+        f.runtime.tick(now);
+    }
+    TEST_ASSERT_TRUE(f.mqtt.abortCount > abortsAt120);
+    TEST_ASSERT_TRUE(f.mqtt.connectCount > connectsAt120);
+    TEST_ASSERT_FALSE(f.state.network.mqttConnected);
+}
+
 static void net_test_wifi_drop_clears_mqtt_connected_and_gate() {
     NetFixture f;
     f.setSsid("MyHomeNet", "pw");
@@ -852,6 +876,7 @@ inline void runConnectivitySuite() {
     RUN_TEST(net_test_connected_fills_ip_rssi_and_mdns_started_once_per_up);
     RUN_TEST(net_test_mqtt_disabled_with_empty_host);
     RUN_TEST(net_test_mqtt_session_publishes_discovery_then_availability_then_states_then_subscribe);
+    RUN_TEST(net_test_stuck_mqtt_attempt_is_aborted_and_retried);
     RUN_TEST(net_test_wifi_drop_clears_mqtt_connected_and_gate);
     RUN_TEST(net_test_inbound_command_applied_via_queue_and_echoed);
     RUN_TEST(net_test_dropped_command_reported);

@@ -38,6 +38,7 @@ public:
     void configure(const MqttEndpoint& ep, const char* clientId, const char* willTopic) override;
     void connect() override;
     void disconnect(bool force) override;
+    void abortConnect() override;
     bool connected() const override;
     bool publish(const char* topic, const char* payload, bool retain) override;
     bool subscribe(const char* topic) override;

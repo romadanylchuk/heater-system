@@ -4,6 +4,24 @@
 
 namespace {
 
+// AsyncMqttClient keeps its AsyncClient private and its disconnect() is a
+// no-op until CONNACK, so a TCP connection waiting for a CONNACK that never
+// comes cannot be closed through the public API. Explicit template
+// instantiation is exempt from access checks ([temp.explicit]), which gives
+// us a pointer-to-member for AsyncMqttClient::_client without patching the
+// library.
+struct MqttClientTcpTag {
+    using type = AsyncClient AsyncMqttClient::*;
+    friend type mqttClientTcp(MqttClientTcpTag);
+};
+
+template <typename Tag, typename Tag::type Member>
+struct PrivateMemberAccess {
+    friend typename Tag::type mqttClientTcp(Tag) { return Member; }
+};
+
+template struct PrivateMemberAccess<MqttClientTcpTag, &AsyncMqttClient::_client>;
+
 void copyText(char* dst, size_t cap, const char* src) {
     if (src == nullptr) {
         dst[0] = '\0';
@@ -57,6 +75,17 @@ void AsyncMqttTransport::configure(const MqttEndpoint& ep, const char* clientId,
 void AsyncMqttTransport::connect() { _client.connect(); }
 
 void AsyncMqttTransport::disconnect(bool force) { _client.disconnect(force); }
+
+void AsyncMqttTransport::abortConnect() {
+    if (_client.connected()) {
+        return;
+    }
+    // Same teardown AsyncMqttClient::disconnect(true) performs once connected:
+    // AsyncClient::close() is tcpip-thread safe and fires the client's
+    // onDisconnect, which resets AsyncMqttClient's internal state. No-op when
+    // no pcb is open.
+    (_client.*mqttClientTcp(MqttClientTcpTag{})).close();
+}
 
 bool AsyncMqttTransport::connected() const { return _client.connected(); }
 

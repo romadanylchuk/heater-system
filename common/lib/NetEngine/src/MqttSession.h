@@ -25,8 +25,9 @@ bool mqttEndpointEquals(const MqttEndpoint& a, const MqttEndpoint& b);
 struct MqttSessionActions {
     bool disconnect = false;       // 1. station-style close of an in-progress/open connection
     bool forceDisconnect = false;  // 2. Wi-Fi went down while the transport reported connected
-    bool configure = false;        // 3. push host/port/user/pass to the transport (disconnected only)
-    bool connect = false;          // 4. non-blocking connect attempt
+    bool abortAttempt = false;     // 3. tear down a connect attempt that timed out (no CONNACK)
+    bool configure = false;        // 4. push host/port/user/pass to the transport (disconnected only)
+    bool connect = false;          // 5. non-blocking connect attempt
     bool sessionStarted = false;   // informational edges (effective connected)
     bool sessionEnded = false;
 };
@@ -34,6 +35,12 @@ struct MqttSessionActions {
 class MqttSession {
 public:
     static constexpr uint32_t BACKOFF_FIRST_MS = 5000, BACKOFF_MAX_MS = 60000;
+    // A connect attempt still not connected this long after the last connect
+    // action is torn down (abortAttempt). AsyncMqttClient has no CONNACK
+    // timeout and AsyncTCP no default RX timeout, so a TCP connection whose
+    // CONNACK never arrives (half-open on a weak link) otherwise stays open
+    // forever and every later connect() is a silent no-op.
+    static constexpr uint32_t ATTEMPT_TIMEOUT_MS = 15000;
 
     // Stores the endpoint and arms configure-on-next-disconnected-tick.
     void begin(const MqttEndpoint& ep, uint64_t nowMs);
@@ -55,7 +62,9 @@ private:
     uint64_t _nextAttempt = 0;
 
     bool _pendingAttempt = false;  // an attempt was issued and has not yet succeeded
-    bool _failureLogged = false;   // MqttDisconnected(2) already logged; re-armed only by a successful connect
+    uint64_t _attemptStart = 0;    // time of the last connect action
+    bool _attemptAborted = false;  // abortAttempt already emitted for the last connect action
+    bool _failureLogged = false;   // MqttDisconnected(2) accepted by the log; re-armed only by a successful connect
 
     bool _effective = false;
     bool _prevWifiUp = false;

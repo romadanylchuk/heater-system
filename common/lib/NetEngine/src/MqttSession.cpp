@@ -37,6 +37,8 @@ void MqttSession::begin(const MqttEndpoint& ep, uint64_t nowMs) {
     _backoff = BACKOFF_FIRST_MS;
     _nextAttempt = nowMs;
     _pendingAttempt = false;
+    _attemptStart = 0;
+    _attemptAborted = false;
     _failureLogged = false;
     _effective = false;
     _prevWifiUp = false;
@@ -53,6 +55,8 @@ MqttSessionActions MqttSession::tick(const MqttEndpoint& ep, bool wifiUp, bool t
         _endpoint = ep;
         if (transportConnected) {
             a.disconnect = true;
+        } else if (_pendingAttempt) {
+            a.abortAttempt = true;  // drop an in-flight attempt to the old endpoint
         }
         _configurePending = true;
         _backoff = BACKOFF_FIRST_MS;
@@ -97,7 +101,16 @@ MqttSessionActions MqttSession::tick(const MqttEndpoint& ep, bool wifiUp, bool t
         a.forceDisconnect = true;
     }
 
-    // 5. Configure: emitted once, on a tick where the transport reports
+    // 5. Attempt timeout: the last connect action has not produced a
+    // connection within ATTEMPT_TIMEOUT_MS -> tear the attempt down (once) so
+    // the next attempt can open a fresh TCP connection.
+    if (wifiUp && !transportConnected && _pendingAttempt && !_attemptAborted &&
+        nowMs - _attemptStart >= ATTEMPT_TIMEOUT_MS) {
+        a.abortAttempt = true;
+        _attemptAborted = true;
+    }
+
+    // 6. Configure: emitted once, on a tick where the transport reports
     // disconnected, immediately followed (same tick) by an attempt once
     // Wi-Fi is up.
     if (_configurePending && !transportConnected) {
@@ -106,19 +119,23 @@ MqttSessionActions MqttSession::tick(const MqttEndpoint& ep, bool wifiUp, bool t
         _nextAttempt = nowMs;
     }
 
-    // 6. Attempt: enabled && Wi-Fi up && transport not connected && due.
+    // 7. Attempt: enabled && Wi-Fi up && transport not connected && due.
     if (wifiUp && !transportConnected && nowMs >= _nextAttempt) {
         if (_pendingAttempt && !_failureLogged) {
-            events.logEvent(toU16(EventType::MqttDisconnected), EVENT_SOURCE_MQTT, 2.0f, 0.0f, EventReason::Logic);
-            _failureLogged = true;
+            // Retried on later attempts while the log rate-limits it (it
+            // usually follows MqttDisconnected(0) within the 60 s window).
+            _failureLogged = events.logEvent(toU16(EventType::MqttDisconnected), EVENT_SOURCE_MQTT, 2.0f, 0.0f,
+                EventReason::Logic);
         }
         a.connect = true;
         _pendingAttempt = true;
+        _attemptStart = nowMs;
+        _attemptAborted = false;
         _nextAttempt = nowMs + _backoff;
         _backoff = std::min(_backoff * 2, BACKOFF_MAX_MS);
     }
 
-    // 7. Effective (enabled && wifiUp && transport) edges.
+    // 8. Effective (enabled && wifiUp && transport) edges.
     const bool effNow = wifiUp && transportConnected;
     if (effNow && !_effective) {
         ++_connectCount;

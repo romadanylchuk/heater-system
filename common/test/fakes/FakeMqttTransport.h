@@ -55,6 +55,10 @@ public:
         connectedFlag = false;
     }
 
+    int abortCount = 0;
+
+    void abortConnect() override { ++abortCount; }
+
     bool connected() const override { return connectedFlag; }
 
     bool publish(const char* topic, const char* payload, bool retain) override {

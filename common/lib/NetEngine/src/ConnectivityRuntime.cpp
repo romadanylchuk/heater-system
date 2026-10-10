@@ -234,6 +234,9 @@ NetTickEvents ConnectivityRuntime::tick(uint64_t nowMs) {
     if (mActions.forceDisconnect) {
         _mqtt.disconnect(true);
     }
+    if (mActions.abortAttempt) {
+        _mqtt.abortConnect();
+    }
     if (mActions.configure) {
         _mqtt.configure(ep, _clientId, _willTopic);
     }
