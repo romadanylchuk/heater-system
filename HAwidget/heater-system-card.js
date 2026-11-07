@@ -1,8 +1,8 @@
 /*
  * heater-system-card — Home Assistant Lovelace card that draws the full
- * hydraulic diagram of the heater-system (boiler-room + home-heating
- * controllers) and shows live temperatures, pumps, K1 mixing valve and
- * K2 diverter states.
+ * hydraulic diagram of the whole heating system (boiler-room + home-heating
+ * controllers + the electric boiler in parallel on the collector) and shows
+ * live temperatures, pumps, K1 mixing valve, K2 diverter, heater and energy.
  *
  * No build step, no dependencies. Copy to /config/www/heater-system/ and add
  * it as a dashboard resource (see README.md in this folder).
@@ -13,9 +13,11 @@
  *   title: Heating system
  *   entities:            # override only the IDs that differ in your HA
  *     t1: sensor.boiler_room_t1_temperature
+ *   eb_power_kw: 7.5     # electric boiler heater rating; the shown kW is this
+ *                        # value while the heater relay is on, not a measurement
  */
 
-const HSC_VERSION = "1.2.0";
+const HSC_VERSION = "1.3.0";
 
 // Default entity IDs: what HA creates from the firmware's MQTT discovery
 // (device "Boiler room" / "Home heating" + entity name).
@@ -46,6 +48,14 @@ const HSC_DEFAULTS = {
   k1_direction: "binary_sensor.home_heating_k1_direction", // ON = opening
   h2_set: "number.home_heating_radiator_supply_setpoint_h2",
   no_need: "binary_sensor.home_heating_no_need",
+  // electric boiler
+  eb_flow: "sensor.electric_boiler_boiler_flow_temp",
+  eb_return: "sensor.electric_boiler_boiler_return_temp",
+  eb_pump: "binary_sensor.electric_boiler_boiler_pump",
+  eb_heater: "binary_sensor.electric_boiler_boiler_heater",
+  eb_energy: "sensor.electric_boiler_boiler_heater_energy",
+  eb_mode: "select.electric_boiler_boiler_mode",
+  eb_set: "number.electric_boiler_flow_setpoint",
 };
 
 // Alarm / warning binary sensors shown in the bottom strip when ON.
@@ -64,11 +74,18 @@ const HSC_DEFAULT_ALARMS = [
   "binary_sensor.home_heating_alarm_h4_fail_safe",
   "binary_sensor.home_heating_alarm_sensors_fail_safe",
   "binary_sensor.home_heating_p4_no_flow_h1",
+  "binary_sensor.electric_boiler_boiler_overheat",
+  "binary_sensor.electric_boiler_flow_sensor_fault",
+  "binary_sensor.electric_boiler_return_sensor_fault",
 ];
 
 // Keys that must resolve for the diagram to be meaningful (others optional).
 const HSC_REQUIRED = ["t1", "t2", "t3", "t4", "t5", "t6", "p1", "p2", "p3",
-  "h1", "h2", "h3", "h4", "p4", "k1_position"];
+  "h1", "h2", "h3", "h4", "p4", "k1_position",
+  "eb_flow", "eb_return", "eb_pump", "eb_heater", "eb_energy"];
+
+// Shown instead of the upper-cased key.
+const HSC_TEMP_LABELS = { eb_flow: "F", eb_return: "R" };
 
 const BAD = new Set(["unavailable", "unknown", "none", "", undefined, null]);
 
@@ -99,25 +116,35 @@ const HSC_PIPES = [
   ["k2Tank",    "M600,236 V300",                 "h3"], // K2 -> DHW coil
   ["coilOut",   "M600,450 V480",                 "h4"], // DHW coil -> return
   ["k2Bypass",  "M616,220 H680 V480",            "h3"], // K2 bypass -> return
-  ["mixed",     "M778,180 H930",                 "h2"], // K1 port 1 -> P4 -> radiators
-  ["radRet",    "M930,300 H760 V198",            "h1"], // radiators -> K1 port 2
+  ["mixed",     "M778,180 H905",                 "h2"], // K1 port 1 -> P4 -> collector tee
+  ["colIn",     "M905,180 H930",                 "colIn"],  // tee -> radiators (active source)
+  ["colOut",    "M930,300 H905",                 "colOut"], // radiators -> return tee (active source)
+  ["radRet",    "M905,300 H760 V198",            "h1"], // return tee -> K1 port 2
+  ["ebFlow",    "M970,455 H982 V128 H905 V180",  "eb_flow"],   // electric boiler -> supply tee
+  ["ebRet",     "M905,300 V410",                 "eb_return"], // return tee -> PE -> electric boiler
   ["radToMain", "M760,300 V480",                   "h1"], // excess -> return main
   ["retMain",   "M760,480 H430 V400 H410",       "h1"], // home return -> accumulator bottom
 ];
 
-function pumpSvg(key, x, y, dir, label) {
+function pumpSvg(key, x, y, dir, label, lx = 0, ly = 32, anchor = "middle") {
   return `
   <g class="pump" id="pump-${key}" data-key="${key}" transform="translate(${x},${y})">
     <circle class="pump-body" r="15"/>
     <circle class="pump-ring" r="15"/>
     <path class="pump-arrow" d="M-6,-8 L9,0 L-6,8 Z" transform="rotate(${dir})"/>
-    <text class="lbl" y="32" text-anchor="middle">${label}</text>
+    <text class="lbl" x="${lx}" y="${ly}" text-anchor="${anchor}">${label}</text>
   </g>`;
 }
 
 function tempSvg(key, x, y, anchor = "middle") {
   return `<text class="temp" id="v-${key}" data-key="${key}" x="${x}" y="${y}"
-    text-anchor="${anchor}">${key.toUpperCase()} --</text>`;
+    text-anchor="${anchor}">${HSC_TEMP_LABELS[key] || key.toUpperCase()} --</text>`;
+}
+
+// Check valve; dir is the rotation of the allowed flow direction.
+function checkSvg(x, y, dir) {
+  return `<g class="check" transform="translate(${x},${y}) rotate(${dir})">
+    <circle r="9"/><path d="M-4,-5 L4,0 L-4,5 Z"/><path class="seat" d="M5,-6 V6"/></g>`;
 }
 
 const HSC_SVG = `
@@ -193,6 +220,24 @@ const HSC_SVG = `
   </g>
   <text class="lbl small" x="950" y="340" text-anchor="middle">Radiators</text>
   ${tempSvg("h1", 850, 318)}
+  ${checkSvg(875, 180, 0)}
+  <circle class="tee" cx="905" cy="180" r="5"/>
+  <circle class="tee" cx="905" cy="300" r="5"/>
+
+  <!-- home: electric boiler, in parallel on the same collector -->
+  ${checkSvg(982, 270, 270)}
+  ${pumpSvg("eb_pump", 905, 358, 90, "PE", -22, 5, "end")}
+  ${tempSvg("eb_return", 897, 400, "end")}
+  ${tempSvg("eb_flow", 977, 382, "end")}
+  <g id="eb" data-key="eb_heater">
+    <rect class="vessel eb-body" x="858" y="410" width="112" height="96" rx="10"/>
+    <text class="lbl" x="914" y="429" text-anchor="middle">Electric boiler</text>
+    <path class="eb-element" d="M868,452 l5,-9 l8,18 l8,-18 l8,18 l5,-9"/>
+    <text class="lbl eb-kw" id="eb-kw" x="963" y="457" text-anchor="end">-- kW</text>
+  </g>
+  <text class="lbl" id="eb-energy" data-key="eb_energy" x="914" y="491" text-anchor="middle">-- kWh</text>
+  <text class="lbl small" id="eb-mode" data-key="eb_mode" x="850" y="445" text-anchor="end">Mode --</text>
+  <text class="lbl small" id="eb-set" data-key="eb_set" x="850" y="462" text-anchor="end">Set --</text>
   <text class="lbl small" x="560" y="500">return to boiler room</text>
 </svg>`;
 
@@ -251,6 +296,16 @@ const HSC_CSS = `
   .chip.ok { color: var(--hsc-on); border: 1px solid var(--hsc-on); cursor: default; }
   .chip.alarm { color: #fff; background: var(--hsc-alarm); }
   .chip.missing { color: var(--hsc-warn); border: 1px dashed var(--hsc-warn); cursor: default; }
+  .check circle { fill: var(--card-background-color, #fff); stroke: var(--hsc-line); stroke-width: 1.5; }
+  .check path { fill: var(--hsc-line); }
+  .check .seat { fill: none; stroke: var(--hsc-line); stroke-width: 2; }
+  .tee { fill: var(--hsc-line); }
+  #eb, #eb-energy, #eb-mode, #eb-set { cursor: pointer; }
+  .eb-element { fill: none; stroke: var(--hsc-off); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+  #eb.on .eb-element { stroke: #e8590c; animation: hsc-glow 1.4s ease-in-out infinite; }
+  #eb.on .eb-kw { fill: #e8590c; font-weight: 600; }
+  #eb.on .eb-body { stroke: #e8590c; }
+  @keyframes hsc-glow { 50% { opacity: .45; } }
   .ver { margin-left: auto; color: var(--hsc-muted); font-size: 11px; align-self: center; }
 `;
 
@@ -266,6 +321,8 @@ function activePipes(s) {
     if (s.k2 === "bypass") a.add("k2Bypass");
   }
   if (s.p4) a.add("supplyB").add("mixed").add("radRet").add("radToMain");
+  if (s.eb_pump) a.add("ebFlow").add("ebRet");
+  if (s.p4 || s.eb_pump) a.add("colIn").add("colOut");
   return a;
 }
 
@@ -288,6 +345,7 @@ class HeaterSystemCard extends HTMLElement {
       temp_scale: HeaterSystemCard._scale(config.temp_scale, config.text_scale ?? 1),
       entities: { ...HSC_DEFAULTS, ...(config.entities || {}) },
       alarms: Array.isArray(config.alarms) ? config.alarms : HSC_DEFAULT_ALARMS,
+      eb_power_kw: Number.isFinite(parseFloat(config.eb_power_kw)) ? parseFloat(config.eb_power_kw) : 7.5,
     };
     this._built = false;
     this._footerHtml = null;
@@ -367,18 +425,18 @@ class HeaterSystemCard extends HTMLElement {
 
     // temperatures
     const temps = {};
-    for (const k of ["t1", "t2", "t3", "t4", "t5", "t6", "h1", "h2", "h3", "h4"]) {
+    for (const k of ["t1", "t2", "t3", "t4", "t5", "t6", "h1", "h2", "h3", "h4", "eb_flow", "eb_return"]) {
       temps[k] = this._num(k);
       const el = this._q(`#v-${k}`);
       if (el) {
-        el.textContent = `${k.toUpperCase()} ${temps[k] === null ? "--" : temps[k].toFixed(1) + "°"}`;
+        el.textContent = `${HSC_TEMP_LABELS[k] || k.toUpperCase()} ${temps[k] === null ? "--" : temps[k].toFixed(1) + "°"}`;
         el.classList.toggle("bad", temps[k] === null);
       }
     }
 
     // pumps
     const s = {};
-    for (const k of ["p1", "p2", "p3", "p4"]) {
+    for (const k of ["p1", "p2", "p3", "p4", "eb_pump"]) {
       s[k] = this._on(k);
       const g = this._q(`#pump-${k}`);
       if (g) {
@@ -409,6 +467,11 @@ class HeaterSystemCard extends HTMLElement {
     this._q("#k1-move").textContent = move;
     this._q("#k1").classList.toggle("moving", power === true);
 
+    // collector stubs carry whichever source is pumping
+    const hot = [s.p4 ? temps.h2 : null, s.eb_pump ? temps.eb_flow : null].filter((t) => t !== null);
+    temps.colIn = hot.length ? Math.max(...hot) : temps.h2;
+    temps.colOut = s.eb_pump ? temps.eb_return : temps.h1;
+
     // pipes: colour by temperature, animate where water flows
     const active = activePipes(s);
     for (const [id, , tkey] of HSC_PIPES) {
@@ -431,6 +494,17 @@ class HeaterSystemCard extends HTMLElement {
     this._q("#b-noneed").textContent = `No need: ${nn === null ? "--" : (nn ? "yes" : "no")}`;
     const h2set = this._num("h2_set");
     this._q("#b-h2set").textContent = `H2 set ${h2set === null ? "--" : h2set.toFixed(1) + "°"}`;
+
+    // electric boiler: heater, nominal power while the relay is on, energy, mode
+    const heater = this._on("eb_heater");
+    this._q("#eb").classList.toggle("on", heater === true);
+    this._q("#eb-kw").textContent = heater === null ? "-- kW" : `${heater ? this._config.eb_power_kw : 0} kW`;
+    const ebEnergy = this._num("eb_energy");
+    this._q("#eb-energy").textContent = `${ebEnergy === null ? "--" : ebEnergy.toFixed(1)} kWh`;
+    const ebMode = this._txt("eb_mode");
+    this._q("#eb-mode").textContent = `Mode ${ebMode ? ebMode.toUpperCase() : "--"}`;
+    const ebSet = this._num("eb_set");
+    this._q("#eb-set").textContent = `Set ${ebSet === null ? "--" : ebSet.toFixed(0) + "°"}`;
 
     this._renderFooter();
   }
@@ -472,7 +546,7 @@ if (!window.customCards.some((c) => c.type === "heater-system-card")) {
   window.customCards.push({
     type: "heater-system-card",
     name: "Heater system hydraulic diagram",
-    description: "Boiler room + home heating: temperatures, pumps, K1 mixing valve and K2 diverter.",
+    description: "Boiler room + home heating + electric boiler: temperatures, pumps, K1 mixing valve, K2 diverter, heater and energy.",
     preview: false,
   });
 }

@@ -22,6 +22,8 @@
   <button data-s="dhw">Summer: DHW charging</button>
   <button data-s="burn">Boiler burning, P1 + P2</button>
   <button data-s="fault">Sensor fault + alarm</button>
+  <button data-s="electric">Electric boiler: heater on</button>
+  <button data-s="ebpump">Electric boiler: pump only</button>
   <button id="dark">Toggle dark</button>
 </div>
 <heater-system-card id="card"></heater-system-card>
@@ -43,7 +45,15 @@ const base = {
   "number.home_heating_radiator_supply_setpoint_h2": "45.0",
   "binary_sensor.home_heating_no_need": "off",
   "binary_sensor.boiler_room_alarm_overheat": "off",
+  "sensor.electric_boiler_boiler_flow_temp": "32.5", "sensor.electric_boiler_boiler_return_temp": "31.1",
+  "binary_sensor.electric_boiler_boiler_pump": "off", "binary_sensor.electric_boiler_boiler_heater": "off",
+  "sensor.electric_boiler_boiler_heater_energy": "122.727", "select.electric_boiler_boiler_mode": "off",
+  "number.electric_boiler_flow_setpoint": "37",
 };
+const p4Off = { "binary_sensor.home_heating_p4": "off", "binary_sensor.boiler_room_p3": "off",
+  "sensor.home_heating_k1_mode": "closed", "sensor.home_heating_k1_position": "0",
+  "sensor.home_heating_h2_temperature": "27.0", "sensor.home_heating_h3_temperature": "25.1",
+  "sensor.boiler_room_t6_temperature": "30.0" };
 const scenarios = {
   winter: {},
   dhw: { "binary_sensor.home_heating_p4": "off", "sensor.home_heating_k2_mode": "tank",
@@ -59,6 +69,11 @@ const scenarios = {
            "binary_sensor.boiler_room_alarm_overheat": "on",
            "sensor.home_heating_k1_position": "30", "sensor.home_heating_k1_mode": "failpos_fb" },
 };
+scenarios.electric = { ...p4Off, "binary_sensor.electric_boiler_boiler_pump": "on",
+  "binary_sensor.electric_boiler_boiler_heater": "on", "select.electric_boiler_boiler_mode": "on",
+  "sensor.electric_boiler_boiler_flow_temp": "36.2", "sensor.electric_boiler_boiler_return_temp": "31.0" };
+scenarios.ebpump = { ...p4Off, "binary_sensor.electric_boiler_boiler_pump": "on",
+  "select.electric_boiler_boiler_mode": "on" };
 const names = { "binary_sensor.home_heating_alarm_h3_fail_safe": "Home heating Alarm H3 fail-safe",
                 "binary_sensor.boiler_room_alarm_overheat": "Boiler room Alarm overheat" };
 const card = document.getElementById("card");
