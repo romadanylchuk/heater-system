@@ -17,7 +17,7 @@
  *                        # value while the heater relay is on, not a measurement
  */
 
-const HSC_VERSION = "1.3.0";
+const HSC_VERSION = "1.4.0";
 
 // Default entity IDs: what HA creates from the firmware's MQTT discovery
 // (device "Boiler room" / "Home heating" + entity name).
@@ -226,9 +226,9 @@ const HSC_SVG = `
 
   <!-- home: electric boiler, in parallel on the same collector -->
   ${checkSvg(982, 270, 270)}
-  ${pumpSvg("eb_pump", 905, 358, 90, "PE", -22, 5, "end")}
-  ${tempSvg("eb_return", 897, 400, "end")}
-  ${tempSvg("eb_flow", 977, 382, "end")}
+  ${pumpSvg("eb_pump", 905, 342, 90, "PE", -22, 5, "end")}
+  ${tempSvg("eb_return", 897, 405, "end")}
+  ${tempSvg("eb_flow", 977, 388, "end")}
   <g id="eb" data-key="eb_heater">
     <rect class="vessel eb-body" x="858" y="410" width="112" height="96" rx="10"/>
     <text class="lbl" x="914" y="429" text-anchor="middle">Electric boiler</text>
@@ -254,7 +254,14 @@ const HSC_CSS = `
     --hsc-temp-scale: 1;
     display: block;
   }
-  ha-card { display: block; padding: 12px 12px 8px; }
+  ha-card { display: block; padding: 12px 12px 8px; position: relative; }
+  .expand { position: absolute; top: 8px; right: 8px; z-index: 2; width: 40px; height: 40px; padding: 0;
+            border: 1px solid var(--divider-color, #ccc); border-radius: 8px; cursor: pointer; font-size: 20px; line-height: 1;
+            background: var(--card-background-color, #fff); color: var(--hsc-line); }
+  ha-card.fs { position: fixed; inset: 0; z-index: 9999; margin: 0; border-radius: 0; overflow: auto; box-sizing: border-box;
+               background: var(--card-background-color, #fff); }
+  ha-card.fs .expand { position: fixed; }
+  ha-card.fs svg { min-width: 900px; height: calc(100dvh - 70px); min-height: 486px; }
   .title { font-size: 1.2em; font-weight: 500; margin: 0 4px 6px; color: var(--hsc-line); }
   svg { width: 100%; height: auto; display: block; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
   .area { fill: none; stroke: var(--divider-color, #ccc); stroke-width: 1.5; stroke-dasharray: 6 4; }
@@ -401,10 +408,17 @@ class HeaterSystemCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${HSC_CSS}</style>
       <ha-card>
+        <button class="expand" id="expand" type="button" title="Full screen" aria-label="Full screen">⤢</button>
         ${title}
         ${HSC_SVG}
         <div class="footer" id="footer"></div>
       </ha-card>`;
+    this._q("#expand").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this._toggleFullscreen();
+    });
+    this.shadowRoot.addEventListener("fullscreenchange", () => this._syncFullscreen());
+    document.addEventListener("fullscreenchange", () => this._syncFullscreen());
     this.shadowRoot.addEventListener("click", (ev) => {
       const el = ev.composedPath().find((n) => n.dataset && (n.dataset.key || n.dataset.entity));
       if (!el) return;
@@ -417,6 +431,33 @@ class HeaterSystemCard extends HTMLElement {
     this.style.setProperty("--hsc-scale", String(this._config.text_scale));
     this.style.setProperty("--hsc-temp-scale", String(this._config.temp_scale));
     this._built = true;
+  }
+
+  // Native fullscreen where the browser allows it; otherwise (iOS, some app
+  // webviews) the card just covers the window.
+  _toggleFullscreen() {
+    const card = this._q("ha-card");
+    if (card.classList.contains("fs")) {
+      if (document.fullscreenElement) document.exitFullscreen();
+      this._setFs(false);
+      return;
+    }
+    this._setFs(true);
+    if (card.requestFullscreen) card.requestFullscreen().catch(() => {});
+  }
+
+  _syncFullscreen() {
+    // Leaving native fullscreen with Esc or the back gesture.
+    if (!document.fullscreenElement && this._nativeFs) this._setFs(false);
+    this._nativeFs = !!document.fullscreenElement;
+  }
+
+  _setFs(on) {
+    this._q("ha-card").classList.toggle("fs", on);
+    const b = this._q("#expand");
+    b.textContent = on ? "✕" : "⤢";
+    b.title = on ? "Close" : "Full screen";
+    b.setAttribute("aria-label", b.title);
   }
 
   _render() {
