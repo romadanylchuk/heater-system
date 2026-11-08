@@ -949,11 +949,23 @@ First matching rule wins:
 | 2 | H3 failed, otherwise | **ON** (forced) | `h3_fault` |
 | 3 | H3 unknown (pending) | OFF at once | `sensor_wait` |
 | 4 | two or more of H1–H3 failed, H3 Ok (D12) | **ON** (forced) | `multi_fault` |
-| 5 | `H3 ≥ h2Set` | ON | `demand` |
+| 5 | was ON and `H3 ≥ h2Set` | ON | `demand` |
+| 5a | was OFF and `H3 ≥ h2Set + p4StartMargin` held for `p4StartConfS` | ON | `demand` |
+| 5a | was OFF, `H3 ≥ h2Set + p4StartMargin`, hold still running | OFF | `start_wait` |
 | 6 | was ON and the last demand is less than `p4OffDelay` min ago | ON | `off_delay` |
 | 7 | otherwise | OFF | `supply_cold` |
 
 Every ON rule except `off_delay` counts as demand and restarts the off delay. The delay also counts from boot.
+
+**Start qualification (2026-11-08).** P4 starts only when H3 is `p4StartMargin` (3 °C) above the setpoint
+for `p4StartConfS` (240 s) without a break; once running it holds down to `h2Set`, so the margin is the
+hysteresis. The hold re-arms on any reading under the threshold, on H3 pending, on Multi and with heating
+off; the forced fail-safe rules (2, 4) are not delayed. Reason: while the boiler room keeps P3 off ("no need"),
+its ~2 min P3 anti-freeze run pushes a slug of lukewarm tank water to H3; with the old rule that started P4,
+cleared "no need" and handed the house back to a tank that could not hold the setpoint (seen on 2026-11-08 with
+the tank at ~35 °C and the setpoint at 34–36 °C). A real offer still starts P4: the boiler room's OFFER keeps P3
+on for `p3OfferWindowMin` (10 min) whatever the flag does, so keep `p4StartConfS` well below that window plus the
+time the supply pipe needs to warm up. `p4StartMargin` 0 + `p4StartConfS` 0 is the old rule.
 
 ### K1 mixing valve
 
@@ -1072,6 +1084,8 @@ target value so an ON→OFF pair is never swallowed):
 |-----|-------|-------|---------|---------|
 | `h2Set` | heating | 30–75 °C (0.5) | 40 | radiator supply setpoint H2 |
 | `p4OffDelay` | heating | 0–60 min | 5 | P4 off delay |
+| `p4StartMargin` | heating | 0–10 °C (0.5) | 3 | P4 start: H3 above `h2Set` by (appended last, 2026-11-08) |
+| `p4StartConfS` | heating | 0–480 s | 240 | P4 start: hold time (appended last, 2026-11-08) |
 | `k1Travel` | k1 | 30–300 s | 120 | K1 full travel time |
 | `k1Period` | k1 | 10–300 s | 30 | K1 control period |
 | `k1Deadband` | k1 | 0.2–5 °C (0.1) | 1 | feedback deadband |

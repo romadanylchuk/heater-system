@@ -52,11 +52,19 @@ struct Fixture {
     bool k1BusyWhileOta = false;   // any K1 activity observed while inhibited
     bool safetySeen = false;       // the safety slot must never be used (A5)
 
-    explicit Fixture(const ConfigSchema& schema = HOME_HEATING_SCHEMA, KvPrepare prepare = nullptr) {
+    explicit Fixture(const ConfigSchema& schema = HOME_HEATING_SCHEMA, KvPrepare prepare = nullptr,
+                     bool instantP4Start = true) {
         if (prepare != nullptr) {
             prepare(kv);
         }
         config.begin(schema, 0);
+        if (instantP4Start && config.indexOf(HH_KEY_P4_START_MARGIN) >= 0) {
+            // Most runtime tests are about K1, events and "no need", not the P4 start
+            // rule: pin the pre-2026-11-08 instant start. The start-qualification
+            // tests build the fixture with instantP4Start = false (real defaults).
+            setSetting(HH_KEY_P4_START_MARGIN, 0.0f);
+            setSetting(HH_KEY_P4_START_CONFIRM, 0.0f);
+        }
         relays.configure(HOME_HEATING_RELAYS, 4, 0);
         relays.setLockMs(LOCK_MS);
         k1.begin(0);
@@ -207,6 +215,48 @@ static void test_hot_h3_p4_waits_for_boot_lock() {
     TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_P4));
     TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_K2));    // energised = TANK (charging), after the boot lock
     TEST_ASSERT_FALSE(f.safetySeen);
+}
+
+// 2026-11-08: with the real defaults (margin 3 °C, hold 240 s) a hot H3 at boot
+// starts P4 only after the hold; the settings resolve through the real schema.
+static void test_p4_start_hold_with_real_defaults() {
+    Fixture f(HOME_HEATING_SCHEMA, nullptr, false);
+    TEST_ASSERT_TRUE(f.rt.ready());
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, f.config.getNumber(f.idx(HH_KEY_P4_START_MARGIN)));
+    TEST_ASSERT_EQUAL_FLOAT(240.0f, f.config.getNumber(f.idx(HH_KEY_P4_START_CONFIRM)));
+    f.start();                                   // H3 70 °C, h2Set 40 °C
+    TEST_ASSERT_FALSE(f.status.p4On);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(P4Reason::StartWait), static_cast<int>(f.status.p4Reason));
+    f.runTo(239000);
+    TEST_ASSERT_FALSE(f.relays.requested(HH_RELAY_P4));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(P4Reason::StartWait), static_cast<int>(f.status.p4Reason));
+    f.runTo(241000);
+    TEST_ASSERT_TRUE(f.status.p4On);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(P4Reason::Demand), static_cast<int>(f.status.p4Reason));
+    TEST_ASSERT_TRUE(f.relays.requested(HH_RELAY_P4));
+    TEST_ASSERT_TRUE(f.relays.actual(HH_RELAY_P4));   // boot lock (60 s) long over
+    TEST_ASSERT_FALSE(f.safetySeen);
+}
+
+// A 2 min lukewarm slug (P3 anti-freeze) never starts P4 and "no need" stays set.
+static void test_p4_anti_freeze_slug_keeps_no_need() {
+    Fixture f(HOME_HEATING_SCHEMA, nullptr, false);
+    f.setSetting(HH_KEY_H2_SET, 34.0f);
+    f.setOk(HH_SENSOR_H3, 30.0f);
+    f.start();
+    f.runTo(400000);                             // boot off-delay (5 min) over, K2 settled
+    TEST_ASSERT_FALSE(f.status.p4On);
+    TEST_ASSERT_TRUE(f.status.noNeed);
+    f.setOk(HH_SENSOR_H3, 37.5f);
+    f.runTo(520000);                             // 2 min slug
+    TEST_ASSERT_FALSE(f.status.p4On);
+    TEST_ASSERT_FALSE(f.relays.requested(HH_RELAY_P4));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(P4Reason::StartWait), static_cast<int>(f.status.p4Reason));
+    TEST_ASSERT_TRUE(f.status.noNeed);
+    f.setOk(HH_SENSOR_H3, 31.0f);
+    f.runTo(530000);
+    TEST_ASSERT_FALSE(f.status.p4On);
+    TEST_ASSERT_TRUE(f.status.noNeed);
 }
 
 static void test_h3_fault_forced_p4_still_waits_for_lock() {
@@ -529,18 +579,19 @@ static void prepareBadNvs(MemoryKvStore& kv) {
     kv.setI32(CONFIG_VERSION_KEY, 1);
     kv.setI32(HH_KEY_H2_SET, 55);        // Float row stored as I32 -> rejected, default kept
     kv.setFloat(HH_KEY_K1_TRAVEL, 90.0f); // Int row stored as Float -> rejected, default kept
+    kv.setI32(HH_KEY_P4_START_MARGIN, 7); // Float row stored as I32 -> rejected, default kept
     kv.commit();
 }
 
 static void test_bad_nvs_values_fall_back_to_defaults() {
-    Fixture f(HOME_HEATING_SCHEMA, prepareBadNvs);
+    Fixture f(HOME_HEATING_SCHEMA, prepareBadNvs, false);
     TEST_ASSERT_TRUE(f.rt.ready());
     size_t idx[HH_RUNTIME_KEY_COUNT];
     const char* const keys[HH_RUNTIME_KEY_COUNT] = {HH_KEY_H2_SET, HH_KEY_P4_OFF_DELAY, HH_KEY_K1_TRAVEL,
         HH_KEY_K1_PERIOD, HH_KEY_K1_DEADBAND, HH_KEY_K1_GAIN, HH_KEY_K1_MAX_PULSE, HH_KEY_K1_MIN_PULSE,
         HH_KEY_K1_RESYNC, HH_KEY_K1_SMALL_DIFF, HH_KEY_K1_FAIL_POS, HH_KEY_K1_FF_STEP, HH_KEY_K2_DELTA,
         HH_KEY_K2_DELTA_HYST, HH_KEY_K2_H3_MIN, HH_KEY_K2_H3_MIN_HYST, HH_KEY_K2_H4_MAX, HH_KEY_K2_H4_MAX_HYST,
-        HH_KEY_HEATING_ENABLED};
+        HH_KEY_P4_START_MARGIN, HH_KEY_P4_START_CONFIRM, HH_KEY_HEATING_ENABLED};
     for (size_t k = 0; k < HH_RUNTIME_KEY_COUNT; ++k) {
         idx[k] = f.idx(keys[k]);
     }
@@ -565,6 +616,8 @@ static void test_bad_nvs_values_fall_back_to_defaults() {
     TEST_ASSERT_EQUAL_FLOAT(d.k2H3MinHyst, s.k2H3MinHyst);
     TEST_ASSERT_EQUAL_FLOAT(d.k2H4Max, s.k2H4Max);
     TEST_ASSERT_EQUAL_FLOAT(d.k2H4MaxHyst, s.k2H4MaxHyst);
+    TEST_ASSERT_EQUAL_FLOAT(d.p4StartMargin, s.p4StartMargin);
+    TEST_ASSERT_EQUAL_UINT32(d.p4StartConfirmS, s.p4StartConfirmS);
     f.start();
     TEST_ASSERT_EQUAL_FLOAT(40.0f, f.status.h2Set);
     TEST_ASSERT_EQUAL_UINT32(132000, f.rt.k1StrokeMs());
@@ -1191,6 +1244,8 @@ int main(int, char**) {
     RUN_TEST(test_begin_ok_on_real_schema);
     RUN_TEST(test_begin_missing_not_ready_outputs_off);
     RUN_TEST(test_hot_h3_p4_waits_for_boot_lock);
+    RUN_TEST(test_p4_start_hold_with_real_defaults);
+    RUN_TEST(test_p4_anti_freeze_slug_keeps_no_need);
     RUN_TEST(test_h3_fault_forced_p4_still_waits_for_lock);
     RUN_TEST(test_k2_flip_back_within_lock_is_delayed);
     RUN_TEST(test_h4_fault_k2_bypass_via_control_slot);

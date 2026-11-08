@@ -83,8 +83,8 @@ static void checkShort(const char* s) {
 
 static void test_p4_reason_strings() {
     const char* keys[] = {"none", "heating_off", "sensor_wait", "demand", "off_delay", "supply_cold", "h3_fault",
-        "multi_fault", "multi_fault_off"};
-    for (uint8_t i = 0; i <= 8; ++i) {
+        "multi_fault", "multi_fault_off", "start_wait"};
+    for (uint8_t i = 0; i <= 9; ++i) {
         const P4Reason r = static_cast<P4Reason>(i);
         checkKey(p4ReasonKey(r));
         checkShort(p4ReasonShort(r));
@@ -171,12 +171,18 @@ static void test_defaults_match_c2_table() {
     TEST_ASSERT_EQUAL_FLOAT(3.0f, s.k2H3MinHyst);
     TEST_ASSERT_EQUAL_FLOAT(70.0f, s.k2H4Max);
     TEST_ASSERT_EQUAL_FLOAT(3.0f, s.k2H4MaxHyst);
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, s.p4StartMargin);       // 2026-11-08
+    TEST_ASSERT_EQUAL_UINT32(240, s.p4StartConfirmS);
 }
 
 static void test_table_rows_key_equals_nvs_key() {
-    TEST_ASSERT_EQUAL_UINT32(18, static_cast<uint32_t>(HOME_HEATING_CONTROL_SETTING_COUNT));
+    TEST_ASSERT_EQUAL_UINT32(20, static_cast<uint32_t>(HOME_HEATING_CONTROL_SETTING_COUNT));
     TEST_ASSERT_EQUAL_PTR(HOME_HEATING_CONTROL_SETTINGS, HOME_HEATING_CONTROL_SETTINGS_TABLE.items);
-    TEST_ASSERT_EQUAL_UINT32(18, static_cast<uint32_t>(HOME_HEATING_CONTROL_SETTINGS_TABLE.count));
+    TEST_ASSERT_EQUAL_UINT32(20, static_cast<uint32_t>(HOME_HEATING_CONTROL_SETTINGS_TABLE.count));
+    // The 2026-11-08 rows are appended last: every earlier control index stays put.
+    TEST_ASSERT_EQUAL_STRING(HH_KEY_K2_H4_MAX_HYST, HOME_HEATING_CONTROL_SETTINGS[17].key);
+    TEST_ASSERT_EQUAL_STRING(HH_KEY_P4_START_MARGIN, HOME_HEATING_CONTROL_SETTINGS[18].key);
+    TEST_ASSERT_EQUAL_STRING(HH_KEY_P4_START_CONFIRM, HOME_HEATING_CONTROL_SETTINGS[19].key);
     for (size_t i = 0; i < HOME_HEATING_CONTROL_SETTING_COUNT; ++i) {
         const SettingDescriptor& d = HOME_HEATING_CONTROL_SETTINGS[i];
         TEST_ASSERT_EQUAL_STRING(d.key, d.nvsKey);
@@ -229,6 +235,8 @@ static void assertSameSettings(const HomeHeatingSettings& a, const HomeHeatingSe
     TEST_ASSERT_EQUAL_FLOAT(a.k2H3MinHyst, b.k2H3MinHyst);
     TEST_ASSERT_EQUAL_FLOAT(a.k2H4Max, b.k2H4Max);
     TEST_ASSERT_EQUAL_FLOAT(a.k2H4MaxHyst, b.k2H4MaxHyst);
+    TEST_ASSERT_EQUAL_FLOAT(a.p4StartMargin, b.p4StartMargin);
+    TEST_ASSERT_EQUAL_UINT32(a.p4StartConfirmS, b.p4StartConfirmS);
 }
 
 static void test_guard_leaves_valid_settings_unchanged() {

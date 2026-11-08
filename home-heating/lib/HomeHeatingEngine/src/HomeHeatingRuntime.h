@@ -31,9 +31,10 @@ enum class HomeHeatingRuntimeStatus : uint8_t { Ok, SettingMissing };
 // Keys the runtime resolves, in HomeHeatingSettings field order, then heatingEnabled.
 enum class HhRuntimeKey : uint8_t {
     H2Set, P4OffDelay, K1Travel, K1Period, K1Deadband, K1Gain, K1MaxPulse, K1MinPulse, K1Resync, K1SmallDiff,
-    K1FailPos, K1FfStep, K2Delta, K2DeltaHyst, K2H3Min, K2H3MinHyst, K2H4Max, K2H4MaxHyst, HeatingEnabled,
+    K1FailPos, K1FfStep, K2Delta, K2DeltaHyst, K2H3Min, K2H3MinHyst, K2H4Max, K2H4MaxHyst,
+    P4StartMargin, P4StartConfirm, HeatingEnabled,
 };
-constexpr size_t HH_RUNTIME_KEY_COUNT = 19;
+constexpr size_t HH_RUNTIME_KEY_COUNT = 21;
 static_assert(static_cast<size_t>(HhRuntimeKey::HeatingEnabled) + 1 == HH_RUNTIME_KEY_COUNT,
     "HH_RUNTIME_KEY_COUNT must match the HhRuntimeKey enum");
 

@@ -10,7 +10,8 @@ const char* const RUNTIME_KEYS[] = {
     HH_KEY_H2_SET, HH_KEY_P4_OFF_DELAY, HH_KEY_K1_TRAVEL, HH_KEY_K1_PERIOD, HH_KEY_K1_DEADBAND, HH_KEY_K1_GAIN,
     HH_KEY_K1_MAX_PULSE, HH_KEY_K1_MIN_PULSE, HH_KEY_K1_RESYNC, HH_KEY_K1_SMALL_DIFF, HH_KEY_K1_FAIL_POS,
     HH_KEY_K1_FF_STEP, HH_KEY_K2_DELTA, HH_KEY_K2_DELTA_HYST, HH_KEY_K2_H3_MIN, HH_KEY_K2_H3_MIN_HYST,
-    HH_KEY_K2_H4_MAX, HH_KEY_K2_H4_MAX_HYST, HH_KEY_HEATING_ENABLED,
+    HH_KEY_K2_H4_MAX, HH_KEY_K2_H4_MAX_HYST, HH_KEY_P4_START_MARGIN, HH_KEY_P4_START_CONFIRM,
+    HH_KEY_HEATING_ENABLED,
 };
 static_assert(sizeof(RUNTIME_KEYS) / sizeof(RUNTIME_KEYS[0]) == HH_RUNTIME_KEY_COUNT,
     "RUNTIME_KEYS must list exactly HH_RUNTIME_KEY_COUNT keys, in HhRuntimeKey order");
@@ -299,6 +300,8 @@ HomeHeatingSettings HomeHeatingRuntime::readSettings(const ConfigEngine& c, cons
     s.k2H3MinHyst = c.getNumber(idx[at(HhRuntimeKey::K2H3MinHyst)]);
     s.k2H4Max = c.getNumber(idx[at(HhRuntimeKey::K2H4Max)]);
     s.k2H4MaxHyst = c.getNumber(idx[at(HhRuntimeKey::K2H4MaxHyst)]);
+    s.p4StartMargin = c.getNumber(idx[at(HhRuntimeKey::P4StartMargin)]);
+    s.p4StartConfirmS = readU32(c, idx[at(HhRuntimeKey::P4StartConfirm)]);
     return s;
 }
 

@@ -44,6 +44,7 @@ const char* p4ReasonKey(P4Reason r) {
         case P4Reason::H3FaultForced: return "h3_fault";
         case P4Reason::MultiFaultForced: return "multi_fault";
         case P4Reason::MultiFaultOff: return "multi_fault_off";
+        case P4Reason::StartWait: return "start_wait";
         default: break;
     }
     return "none";
@@ -60,6 +61,7 @@ const char* p4ReasonShort(P4Reason r) {
         case P4Reason::H3FaultForced: return "H3 fail";
         case P4Reason::MultiFaultForced: return "multi on";
         case P4Reason::MultiFaultOff: return "multi";
+        case P4Reason::StartWait: return "start";
         default: break;
     }
     return "?";

@@ -26,6 +26,10 @@ constexpr const char* HH_KEY_K2_H3_MIN = "k2H3Min";
 constexpr const char* HH_KEY_K2_H3_MIN_HYST = "k2H3MinHyst";
 constexpr const char* HH_KEY_K2_H4_MAX = "k2H4Max";
 constexpr const char* HH_KEY_K2_H4_MAX_HYST = "k2H4MaxHyst";
+// P4 start qualification (2026-11-08): appended after the K2 rows so every
+// earlier control index stays put. Values live in NVS by key, so no migration.
+constexpr const char* HH_KEY_P4_START_MARGIN = "p4StartMargin";
+constexpr const char* HH_KEY_P4_START_CONFIRM = "p4StartConfS";
 constexpr const char* HH_KEY_HEATING_ENABLED = "heatingEnabled";  // existing setting (HOME_HEATING_SETTINGS)
 
 struct HomeHeatingSettings {
@@ -40,6 +44,8 @@ struct HomeHeatingSettings {
     float k1SmallDiff;
     uint32_t k1FailPosPct, k1FfStepPct;
     float k2Delta, k2DeltaHyst, k2H3Min, k2H3MinHyst, k2H4Max, k2H4MaxHyst;
+    float p4StartMargin;         // P4 starts only at H3 >= h2Set + margin ...
+    uint32_t p4StartConfirmS;    // ... held continuously this long (0 = at once)
 };
 
 inline constexpr SettingDescriptor HOME_HEATING_CONTROL_SETTINGS[] = {
@@ -79,10 +85,19 @@ inline constexpr SettingDescriptor HOME_HEATING_CONTROL_SETTINGS[] = {
         "°C", "k2", 40, 80, 70),
     floatSetting("k2H4MaxHyst", "k2H4MaxHyst", "DHW H4 maximum hysteresis", "Гістерезис максимуму H4 ГВП",
         "°C", "k2", 1.0f, 10.0f, 3.0f, 0.5f),
+    // P4 start qualification. A short P3 anti-freeze run (~2 min) pushes a slug
+    // of lukewarm tank water to H3 while the boiler room is idle; without these
+    // P4 started on it and handed the house back to a tank that could not hold
+    // the setpoint. confirm max 480 s stays below the boiler room's 10 min OFFER
+    // window, so a real offer still starts P4. margin 0 + confirm 0 = old rule.
+    floatSetting("p4StartMargin", "p4StartMargin", "P4 start: H3 above H2 setpoint by",
+        "Старт P4: H3 вище уставки H2 на", "°C", "heating", 0.0f, 10.0f, 3.0f, 0.5f),
+    intSetting("p4StartConfS", "p4StartConfS", "P4 start: hold time", "Старт P4: час підтвердження",
+        "s", "heating", 0, 480, 240),
 };
 inline constexpr SettingsTable HOME_HEATING_CONTROL_SETTINGS_TABLE = makeTable(HOME_HEATING_CONTROL_SETTINGS);
 
-constexpr size_t HOME_HEATING_CONTROL_SETTING_COUNT = 18;
+constexpr size_t HOME_HEATING_CONTROL_SETTING_COUNT = 20;
 static_assert(sizeof(HOME_HEATING_CONTROL_SETTINGS) / sizeof(HOME_HEATING_CONTROL_SETTINGS[0]) ==
         HOME_HEATING_CONTROL_SETTING_COUNT,
     "HOME_HEATING_CONTROL_SETTING_COUNT out of sync with HOME_HEATING_CONTROL_SETTINGS");

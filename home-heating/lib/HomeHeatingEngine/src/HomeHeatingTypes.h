@@ -35,6 +35,7 @@ struct SensorInput {            // one logical sensor as the controller sees it
 enum class P4Reason : uint8_t {
     None = 0, HeatingOff = 1, SensorWait = 2, Demand = 3, OffDelay = 4,
     SupplyCold = 5, H3FaultForced = 6, MultiFaultForced = 7, MultiFaultOff = 8,
+    StartWait = 9,   // OFF: H3 reached h2Set + p4StartMargin, hold time still running
 };
 enum class K2Reason : uint8_t {
     None = 0, SensorWait = 1, Charging = 2, DeltaLow = 3, H3Low = 4, H4Full = 5, H3Fault = 6, H4Fault = 7,

@@ -42,6 +42,8 @@ HomeHeatingSettings defaultHomeHeatingSettings() {
     s.k2H3MinHyst = defaultOf(HH_KEY_K2_H3_MIN_HYST);
     s.k2H4Max = defaultOf(HH_KEY_K2_H4_MAX);
     s.k2H4MaxHyst = defaultOf(HH_KEY_K2_H4_MAX_HYST);
+    s.p4StartMargin = defaultOf(HH_KEY_P4_START_MARGIN);
+    s.p4StartConfirmS = defaultU32(HH_KEY_P4_START_CONFIRM);
     return s;
 }
 

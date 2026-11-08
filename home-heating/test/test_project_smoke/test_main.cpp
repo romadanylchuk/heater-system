@@ -362,6 +362,8 @@ static void test_control_keys_min_max() {
         {HH_KEY_K2_H3_MIN_HYST, SettingType::Float, 1, 10, 3},
         {HH_KEY_K2_H4_MAX, SettingType::Int, 40, 80, 70},
         {HH_KEY_K2_H4_MAX_HYST, SettingType::Float, 1, 10, 3},
+        {HH_KEY_P4_START_MARGIN, SettingType::Float, 0, 10, 3},   // 2026-11-08
+        {HH_KEY_P4_START_CONFIRM, SettingType::Int, 0, 480, 240},
     };
     TEST_ASSERT_EQUAL_UINT32(HOME_HEATING_CONTROL_SETTING_COUNT, sizeof(expected) / sizeof(expected[0]));
     for (const ControlKeyExpectation& e : expected) {

@@ -38,6 +38,8 @@ static K1Inputs baseInputs() {
 void setUp() {
     logic.reset();
     g = guardHomeHeatingSettings(defaultHomeHeatingSettings());
+    g.p4StartMargin = 0.0f;   // K1 tests: pin the pre-2026-11-08 instant P4 start
+    g.p4StartConfirmS = 0;
     in = baseInputs();
 }
 void tearDown() {}

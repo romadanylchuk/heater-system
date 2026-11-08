@@ -22,6 +22,11 @@ void setUp() {
     p4.reset(BOOT_MS);
     k2.reset();
     settings = guardHomeHeatingSettings(defaultHomeHeatingSettings());
+    // The stage-08 tests below pin the rule as it was before 2026-11-08:
+    // margin 0 + hold 0 must reproduce it exactly. The start-qualification
+    // tests restore the defaults themselves (useStartDefaults()).
+    settings.p4StartMargin = 0.0f;
+    settings.p4StartConfirmS = 0;
     p4Last = P4Decision{};
     k2Last = K2Decision{};
 }
@@ -238,6 +243,201 @@ static void test_p4_off_delay_left_counts_down() {
         TEST_ASSERT_TRUE(p4Last.offDelayLeftS < prev);
         prev = p4Last.offDelayLeftS;
     }
+}
+
+// ---- P4 start qualification (2026-11-08) ------------------------------------
+// Defaults: h2Set 40, p4StartMargin 3 -> start threshold 43 °C, hold 240 s.
+
+static const uint64_t HOLD_MS = 240ULL * 1000ULL;
+
+static void useStartDefaults() {
+    const HomeHeatingSettings d = defaultHomeHeatingSettings();
+    settings.p4StartMargin = d.p4StartMargin;
+    settings.p4StartConfirmS = d.p4StartConfirmS;
+}
+
+// Boot, then let the boot off-delay run out cold, so P4 is plainly off.
+static uint64_t settleCold() {
+    p4Tick(BOOT_MS, OK, 30.0f);
+    const uint64_t t = BOOT_MS + DELAY_MS;
+    p4Tick(t, OK, 30.0f);
+    ASSERT_P4(false, SupplyCold);
+    TEST_ASSERT_TRUE(p4Last.offDelayElapsed);
+    return t;
+}
+
+static void test_p4_start_defaults() {
+    const HomeHeatingSettings d = defaultHomeHeatingSettings();
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, d.p4StartMargin);
+    TEST_ASSERT_EQUAL_UINT32(240, d.p4StartConfirmS);
+}
+
+static void test_p4_start_needs_margin() {
+    useStartDefaults();
+    const uint64_t t = settleCold();
+    // At the setpoint and just under the margin: no start, no hold.
+    p4Tick(t + 1000, OK, 40.0f);
+    ASSERT_P4(false, SupplyCold);
+    p4Tick(t + 1000 + HOLD_MS * 2, OK, 42.9f);
+    ASSERT_P4(false, SupplyCold);
+    TEST_ASSERT_TRUE(p4Last.offDelayElapsed);
+    // At the margin the hold starts.
+    p4Tick(t + 1000 + HOLD_MS * 3, OK, 43.0f);
+    ASSERT_P4(false, StartWait);
+}
+
+static void test_p4_start_after_hold() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    TEST_ASSERT_TRUE(p4Last.offDelayElapsed);   // "no need" stays set while waiting
+    TEST_ASSERT_EQUAL_UINT32(0, p4Last.offDelayLeftS);
+    p4Tick(t0 + HOLD_MS - 1, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t0 + HOLD_MS, OK, 45.0f);
+    ASSERT_P4(true, Demand);
+    TEST_ASSERT_FALSE(p4Last.offDelayElapsed);
+}
+
+// The 2026-11-08 morning: P3 anti-freeze ran ~2 min every 30 min and pushed a
+// slug of ~35 °C tank water to H3 while the setpoint was ~34 °C. It must not start P4.
+static void test_p4_anti_freeze_slug_does_not_start() {
+    useStartDefaults();
+    settings.h2Set = 34.0f;
+    uint64_t t = settleCold();
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        t += 28ULL * 60000ULL;
+        for (uint64_t s = 0; s <= 120; s += 10) {      // the 2 min P3 run
+            p4Tick(t + s * 1000, OK, 37.5f);          // H2 set + 3.5
+            ASSERT_P4(false, StartWait);
+            TEST_ASSERT_TRUE(p4Last.offDelayElapsed);
+        }
+        p4Tick(t + 121000, OK, 31.0f);                 // pipe cools again
+        ASSERT_P4(false, SupplyCold);
+        t += 2ULL * 60000ULL;
+    }
+}
+
+// The boiler room's OFFER keeps P3 on for 10 min: a really hot supply starts P4.
+static void test_p4_offer_window_starts() {
+    useStartDefaults();
+    settings.h2Set = 36.0f;
+    const uint64_t t0 = settleCold();
+    p4Tick(t0 + 30000, OK, 38.0f);                     // pipe warming, under 39
+    ASSERT_P4(false, SupplyCold);
+    const uint64_t hot = t0 + 60000;
+    for (uint64_t s = 0; s < 240; s += 30) {
+        p4Tick(hot + s * 1000, OK, 60.0f);
+        ASSERT_P4(false, StartWait);
+    }
+    p4Tick(hot + HOLD_MS, OK, 60.0f);
+    ASSERT_P4(true, Demand);
+    TEST_ASSERT_TRUE(hot + HOLD_MS < t0 + 10ULL * 60000ULL);   // inside the 10 min window
+}
+
+static void test_p4_start_hold_rearms_on_dip() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    p4Tick(t0 + 200000, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t0 + 201000, OK, 42.0f);                    // one reading under the margin
+    ASSERT_P4(false, SupplyCold);
+    const uint64_t t1 = t0 + 202000;
+    p4Tick(t1, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t0 + HOLD_MS, OK, 45.0f);                   // the first hold would have ended here
+    ASSERT_P4(false, StartWait);
+    p4Tick(t1 + HOLD_MS - 1, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t1 + HOLD_MS, OK, 45.0f);
+    ASSERT_P4(true, Demand);
+}
+
+static void test_p4_start_hold_rearms_on_pending_and_heating_off() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    p4Tick(t0 + 200000, PENDING, 0.0f);
+    ASSERT_P4(false, SensorWait);
+    const uint64_t t1 = t0 + 201000;
+    p4Tick(t1, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t1 + 100000, OK, 45.0f, FailMode::None, false);
+    ASSERT_P4(false, HeatingOff);
+    const uint64_t t2 = t1 + 101000;
+    p4Tick(t2, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t2 + HOLD_MS - 1, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t2 + HOLD_MS, OK, 45.0f);
+    ASSERT_P4(true, Demand);
+}
+
+// Hysteresis: once running, P4 holds down to the setpoint (not setpoint + margin).
+static void test_p4_running_holds_at_setpoint() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    p4Tick(t0 + HOLD_MS, OK, 45.0f);
+    ASSERT_P4(true, Demand);
+    p4Tick(t0 + HOLD_MS + 1000, OK, 41.0f);            // between 40 and 43
+    ASSERT_P4(true, Demand);
+    p4Tick(t0 + HOLD_MS + 2000, OK, 40.0f);
+    ASSERT_P4(true, Demand);
+    p4Tick(t0 + HOLD_MS + 3000, OK, 39.9f);
+    ASSERT_P4(true, OffDelay);
+    // Back at the setpoint during the off-delay: Demand at once, no hold (P4 never stopped).
+    p4Tick(t0 + HOLD_MS + 60000, OK, 40.5f);
+    ASSERT_P4(true, Demand);
+}
+
+static void test_p4_restart_after_stop_needs_hold() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    p4Tick(t0 + HOLD_MS, OK, 45.0f);
+    ASSERT_P4(true, Demand);
+    const uint64_t cold = t0 + HOLD_MS + 1000;
+    p4Tick(cold, OK, 35.0f);
+    ASSERT_P4(true, OffDelay);
+    p4Tick(cold + DELAY_MS, OK, 35.0f);
+    ASSERT_P4(false, SupplyCold);
+    // Now off: the setpoint alone no longer starts it.
+    p4Tick(cold + DELAY_MS + 1000, OK, 41.0f);
+    ASSERT_P4(false, SupplyCold);
+    const uint64_t t1 = cold + DELAY_MS + 2000;
+    p4Tick(t1, OK, 44.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t1 + HOLD_MS, OK, 44.0f);
+    ASSERT_P4(true, Demand);
+}
+
+// Fail-safes are not delayed by the start hold.
+static void test_p4_fail_safes_ignore_start_hold() {
+    useStartDefaults();
+    const uint64_t t0 = settleCold() + 1000;
+    p4Tick(t0, OK, 45.0f);
+    ASSERT_P4(false, StartWait);
+    p4Tick(t0 + 1000, FAILED, 0.0f, FailMode::H3);
+    ASSERT_P4(true, H3FaultForced);
+    setUp();
+    useStartDefaults();
+    const uint64_t t1 = settleCold() + 1000;
+    p4Tick(t1, OK, 45.0f, FailMode::Multi);
+    ASSERT_P4(true, MultiFaultForced);
+}
+
+// Hold 0 with a margin: start on the first reading at setpoint + margin.
+static void test_p4_zero_hold_starts_at_margin() {
+    useStartDefaults();
+    settings.p4StartConfirmS = 0;
+    const uint64_t t = settleCold();
+    p4Tick(t + 1000, OK, 42.5f);
+    ASSERT_P4(false, SupplyCold);
+    p4Tick(t + 2000, OK, 43.0f);
+    ASSERT_P4(true, Demand);
 }
 
 // ---- K2 --------------------------------------------------------------------
@@ -501,6 +701,17 @@ int main() {
     RUN_TEST(test_p4_multi_with_h3_ok_forced_on);
     RUN_TEST(test_p4_off_delay_runs_from_last_forced_tick);
     RUN_TEST(test_p4_off_delay_left_counts_down);
+    RUN_TEST(test_p4_start_defaults);
+    RUN_TEST(test_p4_start_needs_margin);
+    RUN_TEST(test_p4_start_after_hold);
+    RUN_TEST(test_p4_anti_freeze_slug_does_not_start);
+    RUN_TEST(test_p4_offer_window_starts);
+    RUN_TEST(test_p4_start_hold_rearms_on_dip);
+    RUN_TEST(test_p4_start_hold_rearms_on_pending_and_heating_off);
+    RUN_TEST(test_p4_running_holds_at_setpoint);
+    RUN_TEST(test_p4_restart_after_stop_needs_hold);
+    RUN_TEST(test_p4_fail_safes_ignore_start_hold);
+    RUN_TEST(test_p4_zero_hold_starts_at_margin);
     RUN_TEST(test_k2_tank_when_charging);
     RUN_TEST(test_k2_delta_latch);
     RUN_TEST(test_k2_h3min_latch);

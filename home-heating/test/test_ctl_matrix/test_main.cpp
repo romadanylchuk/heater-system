@@ -18,9 +18,19 @@ static HomeHeatingSettings g;
 static const uint32_t RECAL_MS = 132000u;
 static const uint64_t MATRIX_TICKS = 40;   // 1 s ticks: boot recal + more than one K1 period
 
+// These scenarios are about fail-safes, K1 and K2, not the P4 start rule:
+// pin the pre-2026-11-08 instant start (margin 0, hold 0). test_ctl_p4k2 and
+// test_ctl_runtime cover the start qualification itself.
+static HomeHeatingSettings matrixSettings() {
+    HomeHeatingSettings s = defaultHomeHeatingSettings();
+    s.p4StartMargin = 0.0f;
+    s.p4StartConfirmS = 0;
+    return s;
+}
+
 void setUp() {
     ctl.reset(0);
-    g = defaultHomeHeatingSettings();
+    g = matrixSettings();
 }
 void tearDown() {}
 
@@ -147,7 +157,7 @@ void test_fail_safe_extra_rows() {
         in.sensor[HH_SENSOR_H2] = classInput(x.h2, FS_H2_C, false);
         in.sensor[HH_SENSOR_H3] = classInput(x.h3, FS_H3_C, false);
         in.sensor[HH_SENSOR_H4] = classInput(x.h4, FS_H4_C, false);
-        g = defaultHomeHeatingSettings();
+        g = matrixSettings();
         g.heatingEnabled = x.heatingEnabled;
         const Expect e{x.fail, x.p4On, x.p4Reason, x.k1Mode, x.mask,
                        x.checkK2, x.k2Bypass, x.k2Reason, x.checkNoNeed, x.noNeed};
